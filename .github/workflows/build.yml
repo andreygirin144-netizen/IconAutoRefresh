@@ -1,10 +1,16 @@
-name: Build Rootless Tweak (macOS)
+name: Build Rootless Tweak
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+
   pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
 
 jobs:
@@ -23,26 +29,46 @@ jobs:
 
       - name: Setup Theos
         run: |
-          git clone --recursive https://github.com/theos/theos.git $GITHUB_WORKSPACE/theos
-          echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
+          git clone --recursive \
+            https://github.com/theos/theos.git \
+            "$GITHUB_WORKSPACE/theos"
+
+          echo "THEOS=$GITHUB_WORKSPACE/theos" >> "$GITHUB_ENV"
 
       - name: Setup iOS SDKs
         run: |
-          rm -rf $THEOS/sdks
-          git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
-          echo "SDKROOT=$THEOS/sdks/iPhoneOS16.5.sdk" >> $GITHUB_ENV
+          git clone --depth=1 \
+            https://github.com/theos/sdks.git \
+            "$THEOS/sdks"
+
+      - name: Check Theos
+        run: |
+          echo "THEOS=$THEOS"
+          ls -la "$THEOS"
+          ls -la "$THEOS/sdks"
 
       - name: Fix permissions
         run: |
-          chmod 755 layout/DEBIAN/postinst
+          if [ -f layout/DEBIAN/postinst ]; then
+            chmod 755 layout/DEBIAN/postinst
+          fi
 
-      - name: Build Tweak
+      - name: Build package
         run: |
           make clean
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
-      - name: Upload DEB Artifact
+      - name: Verify package
+        run: |
+          echo "Built packages:"
+          ls -lh packages/
+
+          echo "Package information:"
+          file packages/*.deb
+
+      - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
           name: IconAutoRefresh-Rootless
           path: packages/*.deb
+          if-no-files-found: error
