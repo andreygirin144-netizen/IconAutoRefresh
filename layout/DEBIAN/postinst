@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ "$1" = "configure" ] || [ "$1" = "upgrade" ]; then
+    uicache -a
+fi
+exit 0
