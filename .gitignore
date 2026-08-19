@@ -3,24 +3,50 @@ packages/
 obj/
 *.deb
 *.ipa
-.theos/
-
-# macOS
-.DS_Store
+*.theos
 *.swp
 *.swo
 *~
+.DS_Store
 
-# Logs
+# Xcode / macOS
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserstate
+*.xcuserdatad/
+*.xcassets/
+*.xccheckout
+*.xcscmblueprint
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Theos specific
+.theos/
+.ldid*
+._*
+*_LOCAL_*
 *.log
 *.tmp
 *.temp
+*.cache
+
+# GitHub Actions artifacts
+*.deb
+packages/*
 
 # IDE
 .vscode/
 .idea/
 *.iml
 
-# GitHub Actions artifacts
-*.deb
-packages/*
+# Logs
+*.log
+*.txt
