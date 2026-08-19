@@ -1,0 +1,26 @@
+# Theos build artifacts
+packages/
+obj/
+*.deb
+*.ipa
+.theos/
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+*.tmp
+*.temp
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# GitHub Actions artifacts
+*.deb
+packages/*
