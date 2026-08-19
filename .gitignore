@@ -1,52 +1,38 @@
-# Theos build artifacts
+# Theos
+.theos/
 packages/
 obj/
 *.deb
-*.ipa
 *.theos
+*.ldid*
+*_LOCAL_*
+
+# Temporary files
 *.swp
 *.swo
 *~
-.DS_Store
-
-# Xcode / macOS
-*.xcodeproj/
-*.xcworkspace/
-*.xcuserstate
-*.xcuserdatad/
-*.xcassets/
-*.xccheckout
-*.xcscmblueprint
-*.pbxuser
-*.mode1v3
-*.mode2v3
-*.perspectivev3
-*.moved-aside
-DerivedData/
-*.hmap
-*.ipa
-*.dSYM.zip
-*.dSYM
-
-# Theos specific
-.theos/
-.ldid*
 ._*
-*_LOCAL_*
+
+# Logs / temporary output
 *.log
 *.tmp
 *.temp
 *.cache
 
-# GitHub Actions artifacts
-*.deb
-packages/*
+# macOS
+.DS_Store
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserstate
+*.xcuserdatad/
+DerivedData/
+*.hmap
+*.dSYM
+*.dSYM.zip
 
 # IDE
 .vscode/
 .idea/
 *.iml
-
-# Logs
-*.log
-*.txt
