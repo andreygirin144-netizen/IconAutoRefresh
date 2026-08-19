@@ -2,9 +2,9 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 
-@interface LSApplicationProxy : NSObject
-+ (instancetype)applicationProxyForIdentifier:(NSString *)bundleID;
-- (NSString *)bundleIdentifier;
+@protocol LSApplicationWorkspaceObserverProtocol <NSObject>
+@optional
+- (void)applicationsDidInstall:(NSArray *)applications;
 @end
 
 @interface LSApplicationWorkspace : NSObject
@@ -21,7 +21,6 @@
 @interface SBHIconModel : NSObject
 - (void)layout;
 - (void)reload;
-- (id)expectedIconForDisplayIdentifier:(NSString *)arg1;
 @end
 
 @interface SBIconController : UIViewController
@@ -36,7 +35,7 @@ static void PerformIconRefresh(void) {
         if (workspace && [workspace respondsToSelector:@selector(observers)]) {
             NSArray *allApps = [workspace allApplications];
             
-            for (id observer in [workspace observers]) {
+            for (id<LSApplicationWorkspaceObserverProtocol> observer in [workspace observers]) {
                 if ([observer respondsToSelector:@selector(applicationsDidInstall:)]) {
                     [observer applicationsDidInstall:allApps];
                 }
