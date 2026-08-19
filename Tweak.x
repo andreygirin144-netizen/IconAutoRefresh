@@ -37,9 +37,10 @@ static void IARLog(NSString *format, ...) {
     if (handle) {
         [handle seekToEndOfFile];
 
-        [handle writeData:
-            [line dataUsingEncoding:NSUTF8StringEncoding]];
+        NSData *data =
+            [line dataUsingEncoding:NSUTF8StringEncoding];
 
+        [handle writeData:data];
         [handle closeFile];
     }
 }
@@ -94,15 +95,17 @@ static void IARLog(NSString *format, ...) {
 
 @end
 
-#pragma mark - Get installed applications
+#pragma mark - Installed applications
 
 static NSArray *IARGetInstalledApplications(void) {
+
+    IARLog(@"IARGetInstalledApplications()");
 
     Class workspaceClass =
         NSClassFromString(@"LSApplicationWorkspace");
 
     if (!workspaceClass) {
-        IARLog(@"LSApplicationWorkspace not found");
+        IARLog(@"ERROR: LSApplicationWorkspace not found");
         return nil;
     }
 
@@ -124,7 +127,7 @@ static NSArray *IARGetInstalledApplications(void) {
     }
 
     if (!workspace) {
-        IARLog(@"defaultWorkspace = nil");
+        IARLog(@"ERROR: defaultWorkspace = nil");
         return nil;
     }
 
@@ -134,7 +137,7 @@ static NSArray *IARGetInstalledApplications(void) {
         );
 
     if (![workspace respondsToSelector:appsSelector]) {
-        IARLog(@"allInstalledApplications unavailable");
+        IARLog(@"ERROR: allInstalledApplications unavailable");
         return nil;
     }
 
@@ -147,8 +150,10 @@ static NSArray *IARGetInstalledApplications(void) {
     NSArray *applications =
         func(workspace, appsSelector);
 
-    IARLog(@"LaunchServices returned %lu applications",
-           (unsigned long)applications.count);
+    IARLog(
+        @"LaunchServices returned %lu applications",
+        (unsigned long)applications.count
+    );
 
     return applications;
 }
@@ -228,58 +233,59 @@ static void IARAddIconForBundleID(
         NSClassFromString(@"SBIconController");
 
     if (!controllerClass) {
-        IARLog(@"SBIconController not found");
+        IARLog(@"ERROR: SBIconController not found");
         return;
     }
 
     SEL sharedSelector =
         NSSelectorFromString(@"sharedInstance");
 
-    if (![controllerClass
-          respondsToSelector:sharedSelector]) {
-
-        IARLog(@"sharedInstance unavailable");
+    if (![controllerClass respondsToSelector:sharedSelector]) {
+        IARLog(@"ERROR: sharedInstance unavailable");
         return;
     }
 
     IMP sharedIMP =
-        [controllerClass
-         methodForSelector:sharedSelector];
+        [controllerClass methodForSelector:sharedSelector];
 
     id (*sharedFunc)(id, SEL) =
         (id (*)(id, SEL))sharedIMP;
 
     SBIconController *controller =
-        sharedFunc(controllerClass,
-                   sharedSelector);
+        sharedFunc(
+            controllerClass,
+            sharedSelector
+        );
 
     if (!controller) {
-        IARLog(@"SBIconController = nil");
+        IARLog(@"ERROR: SBIconController = nil");
         return;
     }
+
+    IARLog(@"SBIconController = %@", controller);
 
     SBHIconManager *manager = nil;
 
     SEL managerSelector =
         NSSelectorFromString(@"iconManager");
 
-    if ([controller
-         respondsToSelector:managerSelector]) {
+    if ([controller respondsToSelector:managerSelector]) {
 
         IMP imp =
-            [controller methodForSelector:
-                managerSelector];
+            [controller methodForSelector:managerSelector];
 
         id (*func)(id, SEL) =
             (id (*)(id, SEL))imp;
 
         manager =
-            func(controller,
-                 managerSelector);
+            func(
+                controller,
+                managerSelector
+            );
     }
 
     if (!manager) {
-        IARLog(@"SBHIconManager = nil");
+        IARLog(@"ERROR: SBHIconManager = nil");
         return;
     }
 
@@ -299,12 +305,14 @@ static void IARAddIconForBundleID(
             (id (*)(id, SEL))imp;
 
         model =
-            func(manager,
-                 modelSelector);
+            func(
+                manager,
+                modelSelector
+            );
     }
 
     if (!model) {
-        IARLog(@"SBIconModel = nil");
+        IARLog(@"ERROR: SBIconModel = nil");
         return;
     }
 
@@ -313,7 +321,7 @@ static void IARAddIconForBundleID(
     SBIcon *icon = nil;
 
     /*
-     * First try expectedIconForDisplayIdentifier:
+     * Get icon.
      */
 
     SEL expectedSelector =
@@ -326,13 +334,19 @@ static void IARAddIconForBundleID(
         IMP imp =
             [model methodForSelector:expectedSelector];
 
-        id (*func)(id, SEL, NSString *) =
-            (id (*)(id, SEL, NSString *))imp;
+        SBIcon *(*func)(
+            id,
+            SEL,
+            NSString *
+        ) =
+            (SBIcon *(*)(id, SEL, NSString *))imp;
 
         icon =
-            func(model,
-                 expectedSelector,
-                 bundleID);
+            func(
+                model,
+                expectedSelector,
+                bundleID
+            );
 
         IARLog(
             @"expectedIconForDisplayIdentifier = %@",
@@ -351,20 +365,24 @@ static void IARAddIconForBundleID(
                 @"applicationIconForBundleIdentifier:"
             );
 
-        if ([model respondsToSelector:
-                applicationSelector]) {
+        if ([model respondsToSelector:applicationSelector]) {
 
             IMP imp =
-                [model methodForSelector:
-                    applicationSelector];
+                [model methodForSelector:applicationSelector];
 
-            id (*func)(id, SEL, NSString *) =
-                (id (*)(id, SEL, NSString *))imp;
+            SBIcon *(*func)(
+                id,
+                SEL,
+                NSString *
+            ) =
+                (SBIcon *(*)(id, SEL, NSString *))imp;
 
             icon =
-                func(model,
-                     applicationSelector,
-                     bundleID);
+                func(
+                    model,
+                    applicationSelector,
+                    bundleID
+                );
 
             IARLog(
                 @"applicationIconForBundleIdentifier = %@",
@@ -374,7 +392,10 @@ static void IARAddIconForBundleID(
     }
 
     if (!icon) {
-        IARLog(@"FAILED: could not obtain SBIcon");
+        IARLog(
+            @"ERROR: Could not obtain SBIcon for %@",
+            bundleID
+        );
         return;
     }
 
@@ -388,7 +409,7 @@ static void IARAddIconForBundleID(
     }
 
     /*
-     * Check whether it is already in root folder.
+     * Check Home Screen.
      */
 
     id rootFolder = nil;
@@ -405,8 +426,10 @@ static void IARAddIconForBundleID(
             (id (*)(id, SEL))imp;
 
         rootFolder =
-            func(manager,
-                 rootSelector);
+            func(
+                manager,
+                rootSelector
+            );
     }
 
     if (rootFolder &&
@@ -420,13 +443,19 @@ static void IARAddIconForBundleID(
             [rootFolder methodForSelector:
                 containsSelector];
 
-        BOOL (*func)(id, SEL, id) =
+        BOOL (*func)(
+            id,
+            SEL,
+            id
+        ) =
             (BOOL (*)(id, SEL, id))imp;
 
         BOOL contains =
-            func(rootFolder,
-                 containsSelector,
-                 icon);
+            func(
+                rootFolder,
+                containsSelector,
+                icon
+            );
 
         IARLog(
             @"rootFolder containsIcon = %d",
@@ -440,13 +469,7 @@ static void IARAddIconForBundleID(
     }
 
     /*
-     * IMPORTANT:
-     *
-     * iOS 17.7.1 has this method:
-     *
-     * addNewIconsToDesignatedLocations:saveIconState:
-     *
-     * This is the method we want to test.
+     * Primary iOS 17.x method.
      */
 
     SEL addSelector =
@@ -466,23 +489,31 @@ static void IARAddIconForBundleID(
         IMP imp =
             [manager methodForSelector:addSelector];
 
-        void (*func)(id, SEL, NSArray *, BOOL) =
+        void (*func)(
+            id,
+            SEL,
+            NSArray *,
+            BOOL
+        ) =
             (void (*)(id, SEL, NSArray *, BOOL))imp;
 
-        IARLog(@"Calling addNewIconsToDesignatedLocations:");
+        IARLog(
+            @"Calling addNewIconsToDesignatedLocations:"
+        );
 
-        func(manager,
-             addSelector,
-             icons,
-             YES);
+        func(
+            manager,
+            addSelector,
+            icons,
+            YES
+        );
 
         IARLog(
             @"addNewIconsToDesignatedLocations completed"
         );
 
         /*
-         * Give SpringBoard a moment to process
-         * the model mutation.
+         * Verify after a short delay.
          */
 
         dispatch_after(
@@ -531,21 +562,29 @@ static void IARAddIconForBundleID(
                         @"AFTER INSERT rootFolder containsIcon = %d",
                         result
                     );
+
+                    if (result) {
+                        IARLog(
+                            @"SUCCESS: Icon is now on Home Screen"
+                        );
+                    } else {
+                        IARLog(
+                            @"WARNING: Icon still not in rootFolder"
+                        );
+                    }
                 }
 
-                IARLog(@"Icon insertion test finished");
+                IARLog(
+                    @"Icon insertion test finished"
+                );
             }
         );
 
         return;
     }
 
-    IARLog(
-        @"ERROR: addNewIconsToDesignatedLocations unavailable"
-    );
-
     /*
-     * Secondary diagnostic only.
+     * Secondary method.
      */
 
     SEL addOneSelector =
@@ -559,35 +598,48 @@ static void IARAddIconForBundleID(
             @"FOUND addNewIconToDesignatedLocation:options:"
         );
 
+        /*
+         * We don't call this automatically yet because
+         * the options object is private/version-specific.
+         */
+
         IARLog(
-            @"NOT calling secondary method yet"
+            @"Secondary method available but not called"
         );
     }
 
     /*
-     * Last resort: model addIcon:
-     *
-     * We deliberately don't call it yet because the
-     * manager method above is the safer candidate.
+     * Last diagnostic.
      */
 
     if ([model respondsToSelector:
             NSSelectorFromString(@"addIcon:")]) {
 
-        IARLog(@"SBIconModel addIcon: is available");
+        IARLog(
+            @"SBIconModel addIcon: is available"
+        );
     }
+
+    IARLog(
+        @"ERROR: No compatible icon insertion method found"
+    );
 }
 
 #pragma mark - Polling
 
-static NSMutableSet *gKnownBundleIDs;
+static NSMutableSet<NSString *> *gKnownBundleIDs = nil;
 
 static void IARPoll(void) {
+
+    IARLog(@"========== POLL ==========");
 
     NSArray *current =
         IARGetBundleIDs();
 
     if (!current) {
+        IARLog(
+            @"POLL ERROR: Could not get installed applications"
+        );
         return;
     }
 
@@ -635,15 +687,14 @@ static void IARPoll(void) {
         );
 
         /*
-         * Wait a little after LaunchServices sees
-         * the application so SpringBoard has time to
-         * create the application icon.
+         * Give LaunchServices/SpringBoard time
+         * to finish registering the icon.
          */
 
         dispatch_after(
             dispatch_time(
                 DISPATCH_TIME_NOW,
-                (int64_t)(1.0 * NSEC_PER_SEC)
+                (int64_t)(1.5 * NSEC_PER_SEC)
             ),
             dispatch_get_main_queue(),
             ^{
@@ -656,6 +707,11 @@ static void IARPoll(void) {
         [currentSet mutableCopy];
 }
 
+#pragma mark - Global timer
+
+static dispatch_source_t gPollingTimer = nil;
+static dispatch_queue_t gPollingQueue = nil;
+
 #pragma mark - Constructor
 
 %ctor {
@@ -666,35 +722,58 @@ static void IARPoll(void) {
     IARLog(@"================================");
 
     /*
-     * Wait for SpringBoard initialization.
+     * Give SpringBoard time to finish initialization.
      */
 
     dispatch_after(
         dispatch_time(
             DISPATCH_TIME_NOW,
-            (int64_t)(5 * NSEC_PER_SEC)
+            5 * NSEC_PER_SEC
         ),
         dispatch_get_main_queue(),
         ^{
 
             IARLog(@"Creating polling timer");
 
-            dispatch_queue_t queue =
+            /*
+             * Keep both objects globally retained.
+             */
+
+            gPollingQueue =
                 dispatch_queue_create(
                     "com.custom.iconautorefresh.poll",
                     DISPATCH_QUEUE_SERIAL
                 );
 
-            dispatch_source_t timer =
+            if (!gPollingQueue) {
+                IARLog(
+                    @"ERROR: Failed to create polling queue"
+                );
+                return;
+            }
+
+            gPollingTimer =
                 dispatch_source_create(
                     DISPATCH_SOURCE_TYPE_TIMER,
                     0,
                     0,
-                    queue
+                    gPollingQueue
                 );
 
+            if (!gPollingTimer) {
+                IARLog(
+                    @"ERROR: Failed to create polling timer"
+                );
+                return;
+            }
+
+            /*
+             * First firing after 1 second,
+             * then every 3 seconds.
+             */
+
             dispatch_source_set_timer(
-                timer,
+                gPollingTimer,
                 dispatch_time(
                     DISPATCH_TIME_NOW,
                     1 * NSEC_PER_SEC
@@ -704,20 +783,37 @@ static void IARPoll(void) {
             );
 
             dispatch_source_set_event_handler(
-                timer,
+                gPollingTimer,
                 ^{
+
+                    IARLog(
+                        @"Timer event received on polling queue"
+                    );
 
                     dispatch_async(
                         dispatch_get_main_queue(),
                         ^{
-                            IARLog(@"Timer fired");
+
+                            IARLog(
+                                @"Timer fired"
+                            );
+
                             IARPoll();
                         }
                     );
                 }
             );
 
-            dispatch_resume(timer);
+            dispatch_source_set_cancel_handler(
+                gPollingTimer,
+                ^{
+                    IARLog(
+                        @"Polling timer cancelled"
+                    );
+                }
+            );
+
+            dispatch_resume(gPollingTimer);
 
             IARLog(
                 @"Polling timer started successfully"
