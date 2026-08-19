@@ -2,6 +2,17 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 
+@interface LSApplicationProxy : NSObject
++ (instancetype)applicationProxyForIdentifier:(NSString *)bundleID;
+- (NSString *)bundleIdentifier;
+@end
+
+@interface LSApplicationWorkspace : NSObject
++ (instancetype)defaultWorkspace;
+- (NSArray *)allApplications;
+- (NSArray *)observers;
+@end
+
 @interface SBHIconManager : NSObject
 - (id)iconModel;
 - (void)reloadIcons;
@@ -10,24 +21,28 @@
 @interface SBHIconModel : NSObject
 - (void)layout;
 - (void)reload;
-@end
-
-@interface SBIconModel : NSObject
-- (void)layout;
-- (void)reload;
-- (void)reloadIconState;
-- (void)applicationIconAdded:(id)arg1;
+- (id)expectedIconForDisplayIdentifier:(NSString *)arg1;
 @end
 
 @interface SBIconController : UIViewController
 + (instancetype)sharedInstance;
 - (SBHIconManager *)iconManager;
-- (SBIconModel *)model;
-- (void)refreshIconState;
 @end
 
 static void PerformIconRefresh(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        LSApplicationWorkspace *workspace = [NSClassFromString(@"LSApplicationWorkspace") defaultWorkspace];
+        
+        if (workspace && [workspace respondsToSelector:@selector(observers)]) {
+            NSArray *allApps = [workspace allApplications];
+            
+            for (id observer in [workspace observers]) {
+                if ([observer respondsToSelector:@selector(applicationsDidInstall:)]) {
+                    [observer applicationsDidInstall:allApps];
+                }
+            }
+        }
+
         SBIconController *controller = [NSClassFromString(@"SBIconController") sharedInstance];
         if (!controller) return;
 
@@ -44,23 +59,6 @@ static void PerformIconRefresh(void) {
             } else if ([model respondsToSelector:@selector(reload)]) {
                 [model reload];
             }
-        } else if ([controller respondsToSelector:@selector(model)]) {
-            SBIconModel *model = [controller model];
-            if (model) {
-                if ([model respondsToSelector:@selector(reloadIconState)]) {
-                    [model reloadIconState];
-                } else if ([model respondsToSelector:@selector(reload)]) {
-                    [model reload];
-                } else if ([model respondsToSelector:@selector(applicationIconAdded:)]) {
-                    [model applicationIconAdded:nil];
-                } else if ([model respondsToSelector:@selector(layout)]) {
-                    [model layout];
-                }
-            }
-        }
-        
-        if ([controller respondsToSelector:@selector(refreshIconState)]) {
-            [controller refreshIconState];
         }
     });
 }
@@ -73,7 +71,7 @@ static void DarwinNotificationCallback(CFNotificationCenterRef center, void *obs
 
 - (BOOL)registerApplication:(id)arg1 {
     BOOL result = %orig(arg1);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
             CFSTR("com.custom.iconrefresh.trigger"),
@@ -85,7 +83,7 @@ static void DarwinNotificationCallback(CFNotificationCenterRef center, void *obs
 
 - (BOOL)registerPlugin:(id)arg1 {
     BOOL result = %orig(arg1);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.6 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
             CFSTR("com.custom.iconrefresh.trigger"),
@@ -97,42 +95,8 @@ static void DarwinNotificationCallback(CFNotificationCenterRef center, void *obs
 
 %end
 
-%group MobileInstallerHooks
-
-%hook MobileInstaller
-
-- (void)installApplication:(id)arg1 withOptions:(id)arg2 completion:(id)arg3 {
-    %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFSTR("com.custom.iconrefresh.trigger"),
-            NULL, NULL, YES
-        );
-    });
-}
-
-- (void)installApplication:(id)arg1 withCompletion:(id)arg2 {
-    %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFSTR("com.custom.iconrefresh.trigger"),
-            NULL, NULL, YES
-        );
-    });
-}
-
-%end
-
-%end
-
 %ctor {
     %init(_ungrouped);
-    
-    if (%c(MobileInstaller)) {
-        %init(MobileInstallerHooks);
-    }
     
     NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
     if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
