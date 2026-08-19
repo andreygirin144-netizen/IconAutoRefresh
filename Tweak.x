@@ -198,13 +198,83 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
     });
 }
 
+#pragma mark - Polling fallback
+// None of the Darwin notifications fired for a TrollStore Lite install in
+// testing, so we fall back to a simple, guaranteed-to-work approach:
+// periodically snapshot the installed bundle IDs and diff against the
+// previous snapshot. When a new bundle ID shows up, process it. This does
+// not depend on any private notification name being correct.
+
+static NSMutableSet<NSString *> *gKnownBundleIDs = nil;
+
+static NSArray *IARFetchAllBundleIDs(void) {
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
+                    ? [workspaceClass performSelector:@selector(defaultWorkspace)]
+                    : nil;
+    if (!workspace) {
+        return nil;
+    }
+
+    NSArray *allApps = nil;
+    if ([workspace respondsToSelector:@selector(allInstalledApplications)]) {
+        allApps = [workspace performSelector:@selector(allInstalledApplications)];
+    }
+    if (!allApps) {
+        return nil;
+    }
+
+    NSMutableArray *bundleIDs = [NSMutableArray array];
+    for (id proxy in allApps) {
+        NSString *bundleID = nil;
+        if ([proxy respondsToSelector:@selector(bundleIdentifier)]) {
+            bundleID = [proxy performSelector:@selector(bundleIdentifier)];
+        } else if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
+            bundleID = [proxy performSelector:@selector(applicationIdentifier)];
+        }
+        if (bundleID) {
+            [bundleIDs addObject:bundleID];
+        }
+    }
+    return bundleIDs;
+}
+
+static void IARPollForNewApps(void) {
+    NSArray *current = IARFetchAllBundleIDs();
+    if (!current) {
+        IARLog(@"Poll: could not fetch installed applications");
+        return;
+    }
+
+    if (!gKnownBundleIDs) {
+        // First run: just record the baseline, do not treat everything
+        // that's already installed as "new".
+        gKnownBundleIDs = [NSMutableSet setWithArray:current];
+        IARLog(@"Poll: baseline captured, %lu apps", (unsigned long)gKnownBundleIDs.count);
+        return;
+    }
+
+    NSMutableSet *currentSet = [NSMutableSet setWithArray:current];
+    NSMutableSet *newOnes = [currentSet mutableCopy];
+    [newOnes minusSet:gKnownBundleIDs];
+
+    if (newOnes.count > 0) {
+        IARLog(@"Poll: detected %lu new app(s)", (unsigned long)newOnes.count);
+        for (NSString *bundleID in newOnes) {
+            ProcessBundleID(bundleID);
+        }
+    }
+
+    gKnownBundleIDs = currentSet;
+}
+
 %ctor {
-    IARLog(@"Tweak loaded, registering Darwin notifications");
+    IARLog(@"Tweak loaded, registering Darwin notifications + polling fallback");
 
     CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
 
-    // Cover the common notification names seen across iOS versions/tools
-    // (LaunchServices / installd / TrollStore-style installs).
+    // Keep the notification path too, in case it fires for other install
+    // methods (Sileo/dpkg) even though it didn't for TrollStore Lite.
     const char *notifNames[] = {
         "com.apple.mobile.installation.installed",
         "com.apple.LaunchServices.applicationRegistered",
@@ -221,6 +291,18 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
             CFNotificationSuspensionBehaviorDeliverImmediately
         );
     }
+
+    // Poll every 3 seconds. Cheap: just an array diff, runs on a background
+    // queue so it never blocks SpringBoard's main thread.
+    dispatch_queue_t pollQueue = dispatch_queue_create("com.custom.iconautorefresh.poll", DISPATCH_QUEUE_SERIAL);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, pollQueue);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(timer, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            IARPollForNewApps();
+        });
+    });
+    dispatch_resume(timer);
 
     %init;
 }
