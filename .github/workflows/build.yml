@@ -14,8 +14,7 @@ jobs:
           submodules: recursive
 
       - name: Install ldid
-        run: |
-          brew install ldid
+        run: brew install ldid
 
       - name: Setup Theos
         run: |
@@ -29,8 +28,7 @@ jobs:
           echo "SDKROOT=$THEOS/sdks/iPhoneOS16.5.sdk" >> $GITHUB_ENV
 
       - name: Fix permissions
-        run: |
-          chmod 755 layout/DEBIAN/postinst
+        run: chmod 755 layout/DEBIAN/postinst
 
       - name: Build Tweak
         run: |
