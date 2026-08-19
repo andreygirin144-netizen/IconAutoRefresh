@@ -1,4 +1,5 @@
 THEOS_PACKAGE_SCHEME = rootless
+
 TARGET = iphone:clang:latest:15.0
 ARCHS = arm64 arm64e
 
@@ -10,6 +11,6 @@ TWEAK_NAME = IconAutoRefresh
 
 IconAutoRefresh_FILES = Tweak.x
 IconAutoRefresh_CFLAGS = -fobjc-arc
-IconAutoRefresh_FRAMEWORKS = UIKit CoreGraphics Foundation
+IconAutoRefresh_FRAMEWORKS = UIKit Foundation
 
 include $(THEOS)/makefiles/tweak.mk
