@@ -35,17 +35,11 @@ jobs:
 
           echo "THEOS=$GITHUB_WORKSPACE/theos" >> "$GITHUB_ENV"
 
-      - name: Setup iOS SDKs
-        run: |
-          git clone --depth=1 \
-            https://github.com/theos/sdks.git \
-            "$THEOS/sdks"
-
-      - name: Check Theos
+      - name: Verify Theos and SDKs
         run: |
           echo "THEOS=$THEOS"
-          ls -la "$THEOS"
-          ls -la "$THEOS/sdks"
+          echo "Available SDKs:"
+          find "$THEOS/sdks" -maxdepth 1 -type d -print
 
       - name: Fix permissions
         run: |
