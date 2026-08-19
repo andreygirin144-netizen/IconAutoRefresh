@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 
+#pragma mark - Private interfaces (best-effort, may not exist on all versions)
+
 @interface SBIcon : NSObject
 - (NSString *)applicationBundleID;
 @end
@@ -31,19 +33,31 @@
 - (void)addNewIconToFirstAvailablePage:(id)icon animate:(BOOL)animate;
 @end
 
-@interface SBApplication : NSObject
-- (NSString *)bundleIdentifier;
-@end
+#pragma mark - Core logic
 
-static void ProcessInstalledApplications(id applications) {
-    SBIconController *controller = [NSClassFromString(@"SBIconController") sharedInstance];
-    if (!controller) return;
+static void ProcessBundleID(NSString *bundleID) {
+    NSLog(@"[IconAutoRefresh] ProcessBundleID: %@", bundleID);
+
+    Class controllerClass = NSClassFromString(@"SBIconController");
+    if (!controllerClass) {
+        NSLog(@"[IconAutoRefresh] SBIconController class not found");
+        return;
+    }
+
+    SBIconController *controller = [controllerClass sharedInstance];
+    if (!controller) {
+        NSLog(@"[IconAutoRefresh] sharedInstance is nil");
+        return;
+    }
 
     SBHIconManager *iconManager = nil;
     if ([controller respondsToSelector:@selector(iconManager)]) {
         iconManager = [controller iconManager];
     }
-    if (!iconManager) return;
+    if (!iconManager) {
+        NSLog(@"[IconAutoRefresh] iconManager is nil / not available");
+        return;
+    }
 
     SBHIconModel *model = nil;
     if ([iconManager respondsToSelector:@selector(iconModel)]) {
@@ -55,70 +69,124 @@ static void ProcessInstalledApplications(id applications) {
         rootFolder = [iconManager rootFolder];
     }
 
-    if (!model || !rootFolder) return;
+    if (!model || !rootFolder) {
+        NSLog(@"[IconAutoRefresh] model=%@ rootFolder=%@", model, rootFolder);
+        return;
+    }
 
-    NSArray *appsArray = [applications respondsToSelector:@selector(allObjects)] 
-                        ? [applications allObjects] 
-                        : (NSArray *)applications;
-    
-    BOOL iconAdded = NO;
+    SBIcon *icon = nil;
+    if ([model respondsToSelector:@selector(expectedIconForDisplayIdentifier:)]) {
+        icon = [model expectedIconForDisplayIdentifier:bundleID];
+    }
+    if (!icon && [model respondsToSelector:@selector(applicationIconForBundleIdentifier:)]) {
+        icon = [model applicationIconForBundleIdentifier:bundleID];
+    }
+    if (!icon && [model respondsToSelector:@selector(addApplicationIconForBundleIdentifier:)]) {
+        icon = [model addApplicationIconForBundleIdentifier:bundleID];
+    }
 
-    for (id appObj in appsArray) {
-        NSString *bundleID = nil;
-        if ([appObj isKindOfClass:[NSString class]]) {
-            bundleID = (NSString *)appObj;
-        } else if ([appObj respondsToSelector:@selector(bundleIdentifier)]) {
-            bundleID = [appObj bundleIdentifier];
-        }
+    if (!icon) {
+        NSLog(@"[IconAutoRefresh] Could not resolve icon for %@", bundleID);
+        return;
+    }
 
-        if (!bundleID) continue;
+    BOOL isOnHomeScreen = NO;
+    if ([rootFolder respondsToSelector:@selector(containsIcon:)]) {
+        isOnHomeScreen = [rootFolder containsIcon:icon];
+    }
 
-        SBIcon *icon = nil;
-        if ([model respondsToSelector:@selector(expectedIconForDisplayIdentifier:)]) {
-            icon = [model expectedIconForDisplayIdentifier:bundleID];
-        }
-        if (!icon && [model respondsToSelector:@selector(applicationIconForBundleIdentifier:)]) {
-            icon = [model applicationIconForBundleIdentifier:bundleID];
-        }
-        if (!icon && [model respondsToSelector:@selector(addApplicationIconForBundleIdentifier:)]) {
-            icon = [model addApplicationIconForBundleIdentifier:bundleID];
-        }
+    NSLog(@"[IconAutoRefresh] icon=%@ isOnHomeScreen=%d", icon, isOnHomeScreen);
 
-        if (!icon) continue;
-
-        BOOL isOnHomeScreen = NO;
-        if ([rootFolder respondsToSelector:@selector(containsIcon:)]) {
-            isOnHomeScreen = [rootFolder containsIcon:icon];
-        }
-
-        if (!isOnHomeScreen) {
-            if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-                [controller addNewIconToFirstAvailablePage:icon animate:NO];
-                iconAdded = YES;
-            } else if ([iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-                [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
-                iconAdded = YES;
-            }
+    if (!isOnHomeScreen) {
+        if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
+            [controller addNewIconToFirstAvailablePage:icon animate:NO];
+            NSLog(@"[IconAutoRefresh] Added icon via SBIconController");
+        } else if ([iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
+            [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
+            NSLog(@"[IconAutoRefresh] Added icon via SBHIconManager");
+        } else {
+            NSLog(@"[IconAutoRefresh] No method found to add icon to homescreen");
         }
     }
 
-    if (iconAdded && [model respondsToSelector:@selector(saveIconState)]) {
+    if ([model respondsToSelector:@selector(saveIconState)]) {
         [model saveIconState];
     }
 }
 
-%hook SBHIconManager
+#pragma mark - Darwin notification driven refresh
+// installd / lsd broadcast this notification whenever the installed-apps
+// list changes (install, update, uninstall). This is far more reliable
+// than guessing a private SpringBoard method name per iOS version.
 
-- (void)applicationsDidInstall:(id)applications {
-    %orig;
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        ProcessInstalledApplications(applications);
+static void HandleAppInstallNotification(CFNotificationCenterRef center,
+                                          void *observer,
+                                          CFStringRef name,
+                                          const void *object,
+                                          CFDictionaryRef userInfo) {
+    NSString *notifName = (__bridge NSString *)name;
+    NSLog(@"[IconAutoRefresh] Darwin notification received: %@", notifName);
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // We don't get a bundle ID directly from this notification, so we
+        // do a full pass: ask LSApplicationWorkspace for all installed apps
+        // and re-check which ones are missing from the home screen.
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
+                        ? [workspaceClass performSelector:@selector(defaultWorkspace)]
+                        : nil;
+        if (!workspace) {
+            NSLog(@"[IconAutoRefresh] LSApplicationWorkspace unavailable");
+            return;
+        }
+
+        NSArray *allApps = nil;
+        if ([workspace respondsToSelector:@selector(allInstalledApplications)]) {
+            allApps = [workspace performSelector:@selector(allInstalledApplications)];
+        }
+
+        if (!allApps) {
+            NSLog(@"[IconAutoRefresh] Could not enumerate installed applications");
+            return;
+        }
+
+        for (id proxy in allApps) {
+            NSString *bundleID = nil;
+            if ([proxy respondsToSelector:@selector(bundleIdentifier)]) {
+                bundleID = [proxy performSelector:@selector(bundleIdentifier)];
+            } else if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
+                bundleID = [proxy performSelector:@selector(applicationIdentifier)];
+            }
+            if (bundleID) {
+                ProcessBundleID(bundleID);
+            }
+        }
     });
 }
 
-%end
-
 %ctor {
-    %init(_ungrouped);
+    NSLog(@"[IconAutoRefresh] Tweak loaded, registering Darwin notifications");
+
+    CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
+
+    // Cover the common notification names seen across iOS versions/tools
+    // (LaunchServices / installd / TrollStore-style installs).
+    const char *notifNames[] = {
+        "com.apple.mobile.installation.installed",
+        "com.apple.LaunchServices.applicationRegistered",
+        "com.apple.mobile.application_installed"
+    };
+
+    for (int i = 0; i < 3; i++) {
+        CFNotificationCenterAddObserver(
+            darwinCenter,
+            NULL,
+            HandleAppInstallNotification,
+            (__bridge CFStringRef)[NSString stringWithUTF8String:notifNames[i]],
+            NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately
+        );
+    }
+
+    %init;
 }
