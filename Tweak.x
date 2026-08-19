@@ -1,41 +1,53 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 
-#pragma mark - File-based logging
-// Writing to a plain text file sidesteps having to fight with `log stream`
-// quoting in a terminal app. The file can be opened with any file manager
-// (Files app, Filza, iFile, or `cat` in NewTerm with no special characters).
+#pragma mark - Logging
 
 static NSString *const kIARLogPath = @"/var/mobile/IconAutoRefresh.log";
 
 static void IARLog(NSString *format, ...) {
     va_list args;
     va_start(args, format);
-    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+
+    NSString *message =
+        [[NSString alloc] initWithFormat:format arguments:args];
+
     va_end(args);
 
-    // Still emit to the normal system log too, in case someone is streaming it.
-    NSLog(@"%@", message);
+    NSLog(@"[IconAutoRefresh] %@", message);
 
-    NSString *timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
-                                                           dateStyle:NSDateFormatterShortStyle
-                                                           timeStyle:NSDateFormatterMediumStyle];
-    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
+    NSString *timestamp =
+        [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                         dateStyle:NSDateFormatterShortStyle
+                                         timeStyle:NSDateFormatterMediumStyle];
+
+    NSString *line =
+        [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
 
     NSFileManager *fm = [NSFileManager defaultManager];
+
     if (![fm fileExistsAtPath:kIARLogPath]) {
-        [fm createFileAtPath:kIARLogPath contents:nil attributes:nil];
+        [fm createFileAtPath:kIARLogPath
+                    contents:nil
+                  attributes:nil];
     }
 
-    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:kIARLogPath];
+    NSFileHandle *handle =
+        [NSFileHandle fileHandleForWritingAtPath:kIARLogPath];
+
     if (handle) {
         [handle seekToEndOfFile];
-        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+
+        NSData *data =
+            [line dataUsingEncoding:NSUTF8StringEncoding];
+
+        [handle writeData:data];
         [handle closeFile];
     }
 }
 
-#pragma mark - Private interfaces (best-effort, may not exist on all versions)
+#pragma mark - Private interfaces
 
 @interface SBIcon : NSObject
 - (NSString *)applicationBundleID;
@@ -49,260 +61,565 @@ static void IARLog(NSString *format, ...) {
 @end
 
 @interface SBHIconModel : NSObject
-- (SBIcon *)expectedIconForDisplayIdentifier:(NSString *)bundleID;
-- (SBIcon *)applicationIconForBundleIdentifier:(NSString *)bundleID;
-- (SBIcon *)addApplicationIconForBundleIdentifier:(NSString *)bundleID;
+
+- (SBIcon *)expectedIconForDisplayIdentifier:(NSString *)identifier;
+- (SBIcon *)applicationIconForBundleIdentifier:(NSString *)identifier;
+- (SBIcon *)addApplicationIconForBundleIdentifier:(NSString *)identifier;
+
 - (void)saveIconState;
+
 @end
 
 @interface SBHIconManager : NSObject
+
 - (SBHIconModel *)iconModel;
 - (SBRootFolder *)rootFolder;
-- (void)addNewIconToFirstAvailablePage:(id)icon animate:(BOOL)animate;
+
+- (void)addNewIconToFirstAvailablePage:(SBIcon *)icon
+                               animate:(BOOL)animate;
+
 @end
 
 @interface SBIconController : UIViewController
+
 + (instancetype)sharedInstance;
+
 - (SBHIconManager *)iconManager;
-- (void)addNewIconToFirstAvailablePage:(id)icon animate:(BOOL)animate;
+
+- (void)addNewIconToFirstAvailablePage:(SBIcon *)icon
+                               animate:(BOOL)animate;
+
 @end
 
-#pragma mark - Core logic
+#pragma mark - LaunchServices
 
-static void ProcessBundleID(NSString *bundleID) {
-    IARLog(@"ProcessBundleID: %@", bundleID);
+static NSArray *IARGetInstalledApplications(void) {
 
-    Class controllerClass = NSClassFromString(@"SBIconController");
+    Class workspaceClass =
+        NSClassFromString(@"LSApplicationWorkspace");
+
+    if (!workspaceClass) {
+        IARLog(@"LSApplicationWorkspace class not found");
+        return nil;
+    }
+
+    id workspace = nil;
+
+    SEL defaultWorkspace =
+        NSSelectorFromString(@"defaultWorkspace");
+
+    if ([workspaceClass respondsToSelector:defaultWorkspace]) {
+        workspace =
+            ((id (*)(id, SEL))objc_msgSend)
+            (workspaceClass, defaultWorkspace);
+    }
+
+    if (!workspace) {
+        IARLog(@"defaultWorkspace returned nil");
+        return nil;
+    }
+
+    SEL allInstalled =
+        NSSelectorFromString(@"allInstalledApplications");
+
+    if (![workspace respondsToSelector:allInstalled]) {
+        IARLog(@"allInstalledApplications unavailable");
+        return nil;
+    }
+
+    NSArray *applications =
+        ((id (*)(id, SEL))objc_msgSend)
+        (workspace, allInstalled);
+
+    if (!applications) {
+        IARLog(@"allInstalledApplications returned nil");
+        return nil;
+    }
+
+    return applications;
+}
+
+static NSString *IARBundleIdentifierForApplication(id application) {
+
+    if (!application)
+        return nil;
+
+    SEL bundleIdentifier =
+        NSSelectorFromString(@"bundleIdentifier");
+
+    if ([application respondsToSelector:bundleIdentifier]) {
+
+        return ((id (*)(id, SEL))objc_msgSend)
+            (application, bundleIdentifier);
+    }
+
+    SEL applicationIdentifier =
+        NSSelectorFromString(@"applicationIdentifier");
+
+    if ([application respondsToSelector:applicationIdentifier]) {
+
+        return ((id (*)(id, SEL))objc_msgSend)
+            (application, applicationIdentifier);
+    }
+
+    return nil;
+}
+
+static NSSet<NSString *> *IARGetInstalledBundleIDs(void) {
+
+    NSArray *applications =
+        IARGetInstalledApplications();
+
+    if (!applications)
+        return nil;
+
+    NSMutableSet *result =
+        [NSMutableSet set];
+
+    for (id application in applications) {
+
+        NSString *bundleID =
+            IARBundleIdentifierForApplication(application);
+
+        if (bundleID.length > 0) {
+            [result addObject:bundleID];
+        }
+    }
+
+    return result;
+}
+
+#pragma mark - Add icon
+
+static void IARAddApplicationToHomeScreen(NSString *bundleID) {
+
+    if (![NSThread isMainThread]) {
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            IARAddApplicationToHomeScreen(bundleID);
+        });
+
+        return;
+    }
+
+    IARLog(@"--------------------------------");
+    IARLog(@"Processing %@", bundleID);
+
+    Class controllerClass =
+        NSClassFromString(@"SBIconController");
+
     if (!controllerClass) {
-        IARLog(@"SBIconController class not found");
+        IARLog(@"SBIconController not found");
         return;
     }
 
-    SBIconController *controller = [controllerClass sharedInstance];
+    SBIconController *controller =
+        [controllerClass sharedInstance];
+
     if (!controller) {
-        IARLog(@"sharedInstance is nil");
+        IARLog(@"SBIconController sharedInstance = nil");
         return;
     }
 
-    SBHIconManager *iconManager = nil;
-    if ([controller respondsToSelector:@selector(iconManager)]) {
-        iconManager = [controller iconManager];
+    if (![controller respondsToSelector:@selector(iconManager)]) {
+        IARLog(@"iconManager selector unavailable");
+        return;
     }
+
+    SBHIconManager *iconManager =
+        [controller iconManager];
+
     if (!iconManager) {
-        IARLog(@"iconManager is nil / not available");
+        IARLog(@"iconManager = nil");
         return;
     }
 
     SBHIconModel *model = nil;
+
     if ([iconManager respondsToSelector:@selector(iconModel)]) {
         model = [iconManager iconModel];
     }
 
+    if (!model) {
+        IARLog(@"iconModel = nil");
+        return;
+    }
+
     SBRootFolder *rootFolder = nil;
+
     if ([iconManager respondsToSelector:@selector(rootFolder)]) {
         rootFolder = [iconManager rootFolder];
     }
 
-    if (!model || !rootFolder) {
-        IARLog(@"model=%@ rootFolder=%@", model, rootFolder);
-        return;
+    if (!rootFolder) {
+        IARLog(@"rootFolder = nil");
     }
 
+    /*
+     * First try to get an already existing icon.
+     */
+
     SBIcon *icon = nil;
-    if ([model respondsToSelector:@selector(expectedIconForDisplayIdentifier:)]) {
-        icon = [model expectedIconForDisplayIdentifier:bundleID];
+
+    SEL expectedSelector =
+        NSSelectorFromString(
+            @"expectedIconForDisplayIdentifier:"
+        );
+
+    if ([model respondsToSelector:expectedSelector]) {
+
+        icon =
+            ((id (*)(id, SEL, id))objc_msgSend)
+            (model,
+             expectedSelector,
+             bundleID);
+
+        if (icon) {
+            IARLog(@"Found icon using expectedIconForDisplayIdentifier");
+        }
     }
-    if (!icon && [model respondsToSelector:@selector(applicationIconForBundleIdentifier:)]) {
-        icon = [model applicationIconForBundleIdentifier:bundleID];
+
+    /*
+     * Second method.
+     */
+
+    if (!icon) {
+
+        SEL applicationIconSelector =
+            NSSelectorFromString(
+                @"applicationIconForBundleIdentifier:"
+            );
+
+        if ([model respondsToSelector:applicationIconSelector]) {
+
+            icon =
+                ((id (*)(id, SEL, id))objc_msgSend)
+                (model,
+                 applicationIconSelector,
+                 bundleID);
+
+            if (icon) {
+                IARLog(@"Found icon using applicationIconForBundleIdentifier");
+            }
+        }
     }
-    if (!icon && [model respondsToSelector:@selector(addApplicationIconForBundleIdentifier:)]) {
-        icon = [model addApplicationIconForBundleIdentifier:bundleID];
+
+    /*
+     * If the icon does not exist in the icon model,
+     * ask SpringBoard to create/register it.
+     */
+
+    if (!icon) {
+
+        SEL addSelector =
+            NSSelectorFromString(
+                @"addApplicationIconForBundleIdentifier:"
+            );
+
+        if ([model respondsToSelector:addSelector]) {
+
+            IARLog(@"Trying addApplicationIconForBundleIdentifier");
+
+            icon =
+                ((id (*)(id, SEL, id))objc_msgSend)
+                (model,
+                 addSelector,
+                 bundleID);
+
+            if (icon) {
+                IARLog(@"Icon successfully created");
+            }
+        }
     }
 
     if (!icon) {
-        IARLog(@"Could not resolve icon for %@", bundleID);
+        IARLog(@"FAILED: could not obtain SBIcon for %@", bundleID);
         return;
     }
 
-    BOOL isOnHomeScreen = NO;
-    if ([rootFolder respondsToSelector:@selector(containsIcon:)]) {
-        isOnHomeScreen = [rootFolder containsIcon:icon];
+    /*
+     * Check whether icon is already present.
+     */
+
+    BOOL alreadyOnHomeScreen = NO;
+
+    if (rootFolder &&
+        [rootFolder respondsToSelector:@selector(containsIcon:)]) {
+
+        alreadyOnHomeScreen =
+            [rootFolder containsIcon:icon];
     }
 
-    IARLog(@"icon=%@ isOnHomeScreen=%d", icon, isOnHomeScreen);
+    IARLog(@"Icon = %@", icon);
+    IARLog(@"Already on Home Screen = %d",
+           alreadyOnHomeScreen);
 
-    if (!isOnHomeScreen) {
-        if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-            [controller addNewIconToFirstAvailablePage:icon animate:NO];
-            IARLog(@"Added icon via SBIconController");
-        } else if ([iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-            [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
-            IARLog(@"Added icon via SBHIconManager");
-        } else {
-            IARLog(@"No method found to add icon to homescreen");
+    if (alreadyOnHomeScreen) {
+
+        IARLog(@"Nothing to do: icon already exists");
+
+        if ([model respondsToSelector:@selector(saveIconState)]) {
+            [model saveIconState];
         }
+
+        return;
     }
+
+    /*
+     * Add icon to Home Screen.
+     */
+
+    BOOL added = NO;
+
+    SEL controllerAdd =
+        NSSelectorFromString(
+            @"addNewIconToFirstAvailablePage:animate:"
+        );
+
+    if ([controller respondsToSelector:controllerAdd]) {
+
+        IARLog(@"Adding icon through SBIconController");
+
+        ((void (*)(id, SEL, id, BOOL))objc_msgSend)
+            (controller,
+             controllerAdd,
+             icon,
+             NO);
+
+        added = YES;
+    }
+
+    /*
+     * Fallback to SBHIconManager.
+     */
+
+    if (!added &&
+        [iconManager respondsToSelector:controllerAdd]) {
+
+        IARLog(@"Adding icon through SBHIconManager");
+
+        ((void (*)(id, SEL, id, BOOL))objc_msgSend)
+            (iconManager,
+             controllerAdd,
+             icon,
+             NO);
+
+        added = YES;
+    }
+
+    if (!added) {
+
+        IARLog(@"FAILED: no method available to add icon");
+
+        return;
+    }
+
+    /*
+     * Save icon state.
+     */
 
     if ([model respondsToSelector:@selector(saveIconState)]) {
+
+        IARLog(@"Saving icon state");
+
         [model saveIconState];
     }
-}
 
-#pragma mark - Darwin notification driven refresh
-// installd / lsd broadcast this notification whenever the installed-apps
-// list changes (install, update, uninstall). This is far more reliable
-// than guessing a private SpringBoard method name per iOS version.
+    /*
+     * Give SpringBoard a moment and check again.
+     */
 
-static void HandleAppInstallNotification(CFNotificationCenterRef center,
-                                          void *observer,
-                                          CFStringRef name,
-                                          const void *object,
-                                          CFDictionaryRef userInfo) {
-    NSString *notifName = (__bridge NSString *)name;
-    IARLog(@"Darwin notification received: %@", notifName);
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(0.5 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(),
+        ^{
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // We don't get a bundle ID directly from this notification, so we
-        // do a full pass: ask LSApplicationWorkspace for all installed apps
-        // and re-check which ones are missing from the home screen.
-        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-        id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
-                        ? [workspaceClass performSelector:@selector(defaultWorkspace)]
-                        : nil;
-        if (!workspace) {
-            IARLog(@"LSApplicationWorkspace unavailable");
-            return;
-        }
+            BOOL nowOnHomeScreen = NO;
 
-        NSArray *allApps = nil;
-        if ([workspace respondsToSelector:@selector(allInstalledApplications)]) {
-            allApps = [workspace performSelector:@selector(allInstalledApplications)];
-        }
+            if (rootFolder &&
+                [rootFolder respondsToSelector:@selector(containsIcon:)]) {
 
-        if (!allApps) {
-            IARLog(@"Could not enumerate installed applications");
-            return;
-        }
-
-        for (id proxy in allApps) {
-            NSString *bundleID = nil;
-            if ([proxy respondsToSelector:@selector(bundleIdentifier)]) {
-                bundleID = [proxy performSelector:@selector(bundleIdentifier)];
-            } else if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
-                bundleID = [proxy performSelector:@selector(applicationIdentifier)];
+                nowOnHomeScreen =
+                    [rootFolder containsIcon:icon];
             }
-            if (bundleID) {
-                ProcessBundleID(bundleID);
+
+            IARLog(@"Post-add Home Screen check = %d",
+                   nowOnHomeScreen);
+
+            if (!nowOnHomeScreen) {
+                IARLog(@"WARNING: icon was not added to rootFolder");
+            } else {
+                IARLog(@"SUCCESS: icon is now on Home Screen");
             }
         }
-    });
+    );
 }
 
-#pragma mark - Polling fallback
-// None of the Darwin notifications fired for a TrollStore Lite install in
-// testing, so we fall back to a simple, guaranteed-to-work approach:
-// periodically snapshot the installed bundle IDs and diff against the
-// previous snapshot. When a new bundle ID shows up, process it. This does
-// not depend on any private notification name being correct.
+#pragma mark - Polling
 
-static NSMutableSet<NSString *> *gKnownBundleIDs = nil;
+static NSMutableSet<NSString *> *gKnownBundleIDs;
 
-static NSArray *IARFetchAllBundleIDs(void) {
-    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
-    id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)]
-                    ? [workspaceClass performSelector:@selector(defaultWorkspace)]
-                    : nil;
-    if (!workspace) {
-        return nil;
-    }
+static void IARCheckForNewApplications(void) {
 
-    NSArray *allApps = nil;
-    if ([workspace respondsToSelector:@selector(allInstalledApplications)]) {
-        allApps = [workspace performSelector:@selector(allInstalledApplications)];
-    }
-    if (!allApps) {
-        return nil;
-    }
+    /*
+     * LSApplicationWorkspace should not be queried from
+     * an arbitrary background thread.
+     *
+     * Keep this entire operation on SpringBoard's main queue.
+     */
 
-    NSMutableArray *bundleIDs = [NSMutableArray array];
-    for (id proxy in allApps) {
-        NSString *bundleID = nil;
-        if ([proxy respondsToSelector:@selector(bundleIdentifier)]) {
-            bundleID = [proxy performSelector:@selector(bundleIdentifier)];
-        } else if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
-            bundleID = [proxy performSelector:@selector(applicationIdentifier)];
-        }
-        if (bundleID) {
-            [bundleIDs addObject:bundleID];
-        }
-    }
-    return bundleIDs;
-}
+    if (![NSThread isMainThread]) {
 
-static void IARPollForNewApps(void) {
-    NSArray *current = IARFetchAllBundleIDs();
-    if (!current) {
-        IARLog(@"Poll: could not fetch installed applications");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            IARCheckForNewApplications();
+        });
+
         return;
     }
+
+    NSSet<NSString *> *current =
+        IARGetInstalledBundleIDs();
+
+    if (!current) {
+        IARLog(@"Poll: unable to obtain installed applications");
+        return;
+    }
+
+    /*
+     * First invocation establishes baseline.
+     */
 
     if (!gKnownBundleIDs) {
-        // First run: just record the baseline, do not treat everything
-        // that's already installed as "new".
-        gKnownBundleIDs = [NSMutableSet setWithArray:current];
-        IARLog(@"Poll: baseline captured, %lu apps", (unsigned long)gKnownBundleIDs.count);
+
+        gKnownBundleIDs =
+            [current mutableCopy];
+
+        IARLog(
+            @"Poll baseline captured: %lu applications",
+            (unsigned long)gKnownBundleIDs.count
+        );
+
         return;
     }
 
-    NSMutableSet *currentSet = [NSMutableSet setWithArray:current];
-    NSMutableSet *newOnes = [currentSet mutableCopy];
-    [newOnes minusSet:gKnownBundleIDs];
+    NSMutableSet<NSString *> *newApplications =
+        [current mutableCopy];
 
-    if (newOnes.count > 0) {
-        IARLog(@"Poll: detected %lu new app(s)", (unsigned long)newOnes.count);
-        for (NSString *bundleID in newOnes) {
-            ProcessBundleID(bundleID);
-        }
+    [newApplications minusSet:gKnownBundleIDs];
+
+    /*
+     * Update snapshot immediately.
+     */
+
+    gKnownBundleIDs =
+        [current mutableCopy];
+
+    if (newApplications.count == 0) {
+        return;
     }
 
-    gKnownBundleIDs = currentSet;
-}
+    IARLog(
+        @"Poll detected %lu NEW application(s)",
+        (unsigned long)newApplications.count
+    );
 
-%ctor {
-    IARLog(@"Tweak loaded, registering Darwin notifications + polling fallback");
+    for (NSString *bundleID in newApplications) {
 
-    CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
+        IARLog(@"New application: %@", bundleID);
 
-    // Keep the notification path too, in case it fires for other install
-    // methods (Sileo/dpkg) even though it didn't for TrollStore Lite.
-    const char *notifNames[] = {
-        "com.apple.mobile.installation.installed",
-        "com.apple.LaunchServices.applicationRegistered",
-        "com.apple.mobile.application_installed"
-    };
+        /*
+         * Give LaunchServices / SpringBoard a short moment
+         * to finish registering the application.
+         */
 
-    for (int i = 0; i < 3; i++) {
-        CFNotificationCenterAddObserver(
-            darwinCenter,
-            NULL,
-            HandleAppInstallNotification,
-            (__bridge CFStringRef)[NSString stringWithUTF8String:notifNames[i]],
-            NULL,
-            CFNotificationSuspensionBehaviorDeliverImmediately
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW,
+                          (int64_t)(1.0 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(),
+            ^{
+
+                IARAddApplicationToHomeScreen(bundleID);
+            }
         );
     }
+}
 
-    // Poll every 3 seconds. Cheap: just an array diff, runs on a background
-    // queue so it never blocks SpringBoard's main thread.
-    dispatch_queue_t pollQueue = dispatch_queue_create("com.custom.iconautorefresh.poll", DISPATCH_QUEUE_SERIAL);
-    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, pollQueue);
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), 3 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
+#pragma mark - Timer
+
+static void IARStartPolling(void) {
+
+    dispatch_queue_t queue =
+        dispatch_get_main_queue();
+
+    dispatch_source_t timer =
+        dispatch_source_create(
+            DISPATCH_SOURCE_TYPE_TIMER,
+            0,
+            0,
+            queue
+        );
+
+    if (!timer) {
+        IARLog(@"Failed to create polling timer");
+        return;
+    }
+
+    /*
+     * First check after 5 seconds.
+     * Then every 3 seconds.
+     */
+
+    dispatch_source_set_timer(
+        timer,
+        dispatch_time(
+            DISPATCH_TIME_NOW,
+            5 * NSEC_PER_SEC
+        ),
+        3 * NSEC_PER_SEC,
+        500 * NSEC_PER_MSEC
+    );
+
     dispatch_source_set_event_handler(timer, ^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            IARPollForNewApps();
-        });
+
+        IARCheckForNewApplications();
+
     });
+
+    /*
+     * Keep the timer alive for the lifetime of SpringBoard.
+     */
+
     dispatch_resume(timer);
+
+    IARLog(@"Polling started");
+}
+
+#pragma mark - Constructor
+
+%ctor {
+
+    @autoreleasepool {
+
+        IARLog(@"================================");
+        IARLog(@"IconAutoRefresh loaded");
+        IARLog(@"Starting application monitor");
+
+        /*
+         * Start on SpringBoard main queue.
+         */
+
+        dispatch_async(
+            dispatch_get_main_queue(),
+            ^{
+
+                IARStartPolling();
+
+            }
+        );
+
+        IARLog(@"Initialization complete");
+    }
 
     %init;
 }
