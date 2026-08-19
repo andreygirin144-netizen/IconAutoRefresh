@@ -1,5 +1,16 @@
 #!/bin/sh
+set -e
+
 if [ "$1" = "configure" ] || [ "$1" = "upgrade" ]; then
-    uicache -a
+    if command -v uicache >/dev/null 2>&1; then
+        uicache -a
+    elif [ -x /var/jb/usr/bin/uicache ]; then
+        /var/jb/usr/bin/uicache -a
+    elif [ -x /usr/bin/uicache ]; then
+        /usr/bin/uicache -a
+    else
+        echo "[IconAutoRefresh] uicache not found, skipping"
+    fi
 fi
+
 exit 0
