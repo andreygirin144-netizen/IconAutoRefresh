@@ -1,19 +1,27 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
-#import <CoreFoundation/CoreFoundation.h>
 
 @interface SBIcon : NSObject
 - (NSString *)applicationBundleID;
 @end
 
+@interface SBFolder : NSObject
+- (BOOL)containsIcon:(id)icon;
+@end
+
+@interface SBRootFolder : SBFolder
+@end
+
 @interface SBHIconModel : NSObject
 - (SBIcon *)expectedIconForDisplayIdentifier:(NSString *)bundleID;
-- (BOOL)isIconVisible:(id)icon;
+- (SBIcon *)applicationIconForBundleIdentifier:(NSString *)bundleID;
+- (SBIcon *)addApplicationIconForBundleIdentifier:(NSString *)bundleID;
+- (void)saveIconState;
 @end
 
 @interface SBHIconManager : NSObject
 - (SBHIconModel *)iconModel;
-- (void)reloadIcons;
+- (SBRootFolder *)rootFolder;
 - (void)addNewIconToFirstAvailablePage:(id)icon animate:(BOOL)animate;
 @end
 
@@ -23,109 +31,94 @@
 - (void)addNewIconToFirstAvailablePage:(id)icon animate:(BOOL)animate;
 @end
 
-@interface LSApplicationWorkspace : NSObject
-+ (instancetype)defaultWorkspace;
-- (NSArray *)allApplications;
-@end
-
-@interface LSApplicationProxy : NSObject
+@interface SBApplication : NSObject
 - (NSString *)bundleIdentifier;
-- (BOOL)isInstalled;
 @end
 
-static void PerformIconRefresh(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        SBIconController *controller = [NSClassFromString(@"SBIconController") sharedInstance];
-        if (!controller) return;
+static void ProcessInstalledApplications(id applications) {
+    SBIconController *controller = [NSClassFromString(@"SBIconController") sharedInstance];
+    if (!controller) return;
 
-        SBHIconManager *iconManager = nil;
-        if ([controller respondsToSelector:@selector(iconManager)]) {
-            iconManager = [controller iconManager];
+    SBHIconManager *iconManager = nil;
+    if ([controller respondsToSelector:@selector(iconManager)]) {
+        iconManager = [controller iconManager];
+    }
+    if (!iconManager) return;
+
+    SBHIconModel *model = nil;
+    if ([iconManager respondsToSelector:@selector(iconModel)]) {
+        model = [iconManager iconModel];
+    }
+
+    SBRootFolder *rootFolder = nil;
+    if ([iconManager respondsToSelector:@selector(rootFolder)]) {
+        rootFolder = [iconManager rootFolder];
+    }
+
+    if (!model || !rootFolder) return;
+
+    NSArray *appsArray = [applications respondsToSelector:@selector(allObjects)] 
+                        ? [applications allObjects] 
+                        : (NSArray *)applications;
+    
+    BOOL iconAdded = NO;
+
+    for (id appObj in appsArray) {
+        NSString *bundleID = nil;
+        if ([appObj isKindOfClass:[NSString class]]) {
+            bundleID = (NSString *)appObj;
+        } else if ([appObj respondsToSelector:@selector(bundleIdentifier)]) {
+            bundleID = [appObj bundleIdentifier];
         }
 
-        SBHIconModel *model = nil;
-        if (iconManager && [iconManager respondsToSelector:@selector(iconModel)]) {
-            model = [iconManager iconModel];
+        if (!bundleID) continue;
+
+        SBIcon *icon = nil;
+        if ([model respondsToSelector:@selector(expectedIconForDisplayIdentifier:)]) {
+            icon = [model expectedIconForDisplayIdentifier:bundleID];
+        }
+        if (!icon && [model respondsToSelector:@selector(applicationIconForBundleIdentifier:)]) {
+            icon = [model applicationIconForBundleIdentifier:bundleID];
+        }
+        if (!icon && [model respondsToSelector:@selector(addApplicationIconForBundleIdentifier:)]) {
+            icon = [model addApplicationIconForBundleIdentifier:bundleID];
         }
 
-        LSApplicationWorkspace *workspace = [NSClassFromString(@"LSApplicationWorkspace") defaultWorkspace];
-        if (!model || !workspace) return;
+        if (!icon) continue;
 
-        NSArray *allApps = [workspace allApplications];
+        BOOL isOnHomeScreen = NO;
+        if ([rootFolder respondsToSelector:@selector(containsIcon:)]) {
+            isOnHomeScreen = [rootFolder containsIcon:icon];
+        }
 
-        for (LSApplicationProxy *appProxy in allApps) {
-            if (![appProxy respondsToSelector:@selector(bundleIdentifier)]) continue;
-            
-            NSString *bundleID = [appProxy bundleIdentifier];
-            if (!bundleID) continue;
-
-            SBIcon *icon = nil;
-            if ([model respondsToSelector:@selector(expectedIconForDisplayIdentifier:)]) {
-                icon = [model expectedIconForDisplayIdentifier:bundleID];
-            }
-
-            if (!icon) continue;
-
-            BOOL isVisible = NO;
-            if ([model respondsToSelector:@selector(isIconVisible:)]) {
-                isVisible = [model isIconVisible:icon];
-            }
-
-            if (!isVisible) {
-                if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-                    [controller addNewIconToFirstAvailablePage:icon animate:NO];
-                } else if (iconManager && [iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
-                    [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
-                }
+        if (!isOnHomeScreen) {
+            if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
+                [controller addNewIconToFirstAvailablePage:icon animate:NO];
+                iconAdded = YES;
+            } else if ([iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
+                [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
+                iconAdded = YES;
             }
         }
-    });
+    }
+
+    if (iconAdded && [model respondsToSelector:@selector(saveIconState)]) {
+        [model saveIconState];
+    }
 }
 
-static void DarwinNotificationCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    PerformIconRefresh();
-}
+%hook SBHIconManager
 
-%hook LSApplicationWorkspace
-
-- (BOOL)registerApplication:(id)arg1 {
-    BOOL result = %orig(arg1);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFSTR("com.custom.iconrefresh.trigger"),
-            NULL, NULL, YES
-        );
+- (void)applicationsDidInstall:(id)applications {
+    %orig;
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ProcessInstalledApplications(applications);
     });
-    return result;
-}
-
-- (BOOL)registerPlugin:(id)arg1 {
-    BOOL result = %orig(arg1);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            CFSTR("com.custom.iconrefresh.trigger"),
-            NULL, NULL, YES
-        );
-    });
-    return result;
 }
 
 %end
 
 %ctor {
     %init(_ungrouped);
-    
-    NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            NULL,
-            (CFNotificationCallback)DarwinNotificationCallback,
-            CFSTR("com.custom.iconrefresh.trigger"),
-            NULL,
-            CFNotificationSuspensionBehaviorDeliverImmediately
-        );
-    }
 }
