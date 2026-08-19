@@ -1,10 +1,10 @@
-Package: com.andreygirin144-netizen.iconautorefresh
+Package: com.custom.iconautorefresh
 Name: IconAutoRefresh
 Version: 1.0.0
 Architecture: iphoneos-arm
 Description: Auto-refresh home screen icons without respring.
  Automatically reloads SpringBoard icon cache after installing apps via Sileo, TrollStore Lite, or dpkg. No manual respring or uicache required!
-Maintainer: andreygirin144-netizen <andreygirin144@gmail.com>
-Author: andreygirin144-netizen
+Maintainer: YourName <your@email.com>
+Author: YourName
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 15.0)
