@@ -1,6 +1,40 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 
+#pragma mark - File-based logging
+// Writing to a plain text file sidesteps having to fight with `log stream`
+// quoting in a terminal app. The file can be opened with any file manager
+// (Files app, Filza, iFile, or `cat` in NewTerm with no special characters).
+
+static NSString *const kIARLogPath = @"/var/mobile/IconAutoRefresh.log";
+
+static void IARLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    // Still emit to the normal system log too, in case someone is streaming it.
+    NSLog(@"%@", message);
+
+    NSString *timestamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                           dateStyle:NSDateFormatterShortStyle
+                                                           timeStyle:NSDateFormatterMediumStyle];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", timestamp, message];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:kIARLogPath]) {
+        [fm createFileAtPath:kIARLogPath contents:nil attributes:nil];
+    }
+
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:kIARLogPath];
+    if (handle) {
+        [handle seekToEndOfFile];
+        [handle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle closeFile];
+    }
+}
+
 #pragma mark - Private interfaces (best-effort, may not exist on all versions)
 
 @interface SBIcon : NSObject
@@ -36,17 +70,17 @@
 #pragma mark - Core logic
 
 static void ProcessBundleID(NSString *bundleID) {
-    NSLog(@"[IconAutoRefresh] ProcessBundleID: %@", bundleID);
+    IARLog(@"ProcessBundleID: %@", bundleID);
 
     Class controllerClass = NSClassFromString(@"SBIconController");
     if (!controllerClass) {
-        NSLog(@"[IconAutoRefresh] SBIconController class not found");
+        IARLog(@"SBIconController class not found");
         return;
     }
 
     SBIconController *controller = [controllerClass sharedInstance];
     if (!controller) {
-        NSLog(@"[IconAutoRefresh] sharedInstance is nil");
+        IARLog(@"sharedInstance is nil");
         return;
     }
 
@@ -55,7 +89,7 @@ static void ProcessBundleID(NSString *bundleID) {
         iconManager = [controller iconManager];
     }
     if (!iconManager) {
-        NSLog(@"[IconAutoRefresh] iconManager is nil / not available");
+        IARLog(@"iconManager is nil / not available");
         return;
     }
 
@@ -70,7 +104,7 @@ static void ProcessBundleID(NSString *bundleID) {
     }
 
     if (!model || !rootFolder) {
-        NSLog(@"[IconAutoRefresh] model=%@ rootFolder=%@", model, rootFolder);
+        IARLog(@"model=%@ rootFolder=%@", model, rootFolder);
         return;
     }
 
@@ -86,7 +120,7 @@ static void ProcessBundleID(NSString *bundleID) {
     }
 
     if (!icon) {
-        NSLog(@"[IconAutoRefresh] Could not resolve icon for %@", bundleID);
+        IARLog(@"Could not resolve icon for %@", bundleID);
         return;
     }
 
@@ -95,17 +129,17 @@ static void ProcessBundleID(NSString *bundleID) {
         isOnHomeScreen = [rootFolder containsIcon:icon];
     }
 
-    NSLog(@"[IconAutoRefresh] icon=%@ isOnHomeScreen=%d", icon, isOnHomeScreen);
+    IARLog(@"icon=%@ isOnHomeScreen=%d", icon, isOnHomeScreen);
 
     if (!isOnHomeScreen) {
         if ([controller respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
             [controller addNewIconToFirstAvailablePage:icon animate:NO];
-            NSLog(@"[IconAutoRefresh] Added icon via SBIconController");
+            IARLog(@"Added icon via SBIconController");
         } else if ([iconManager respondsToSelector:@selector(addNewIconToFirstAvailablePage:animate:)]) {
             [iconManager addNewIconToFirstAvailablePage:icon animate:NO];
-            NSLog(@"[IconAutoRefresh] Added icon via SBHIconManager");
+            IARLog(@"Added icon via SBHIconManager");
         } else {
-            NSLog(@"[IconAutoRefresh] No method found to add icon to homescreen");
+            IARLog(@"No method found to add icon to homescreen");
         }
     }
 
@@ -125,7 +159,7 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
                                           const void *object,
                                           CFDictionaryRef userInfo) {
     NSString *notifName = (__bridge NSString *)name;
-    NSLog(@"[IconAutoRefresh] Darwin notification received: %@", notifName);
+    IARLog(@"Darwin notification received: %@", notifName);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // We don't get a bundle ID directly from this notification, so we
@@ -136,7 +170,7 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
                         ? [workspaceClass performSelector:@selector(defaultWorkspace)]
                         : nil;
         if (!workspace) {
-            NSLog(@"[IconAutoRefresh] LSApplicationWorkspace unavailable");
+            IARLog(@"LSApplicationWorkspace unavailable");
             return;
         }
 
@@ -146,7 +180,7 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
         }
 
         if (!allApps) {
-            NSLog(@"[IconAutoRefresh] Could not enumerate installed applications");
+            IARLog(@"Could not enumerate installed applications");
             return;
         }
 
@@ -165,7 +199,7 @@ static void HandleAppInstallNotification(CFNotificationCenterRef center,
 }
 
 %ctor {
-    NSLog(@"[IconAutoRefresh] Tweak loaded, registering Darwin notifications");
+    IARLog(@"Tweak loaded, registering Darwin notifications");
 
     CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
 
