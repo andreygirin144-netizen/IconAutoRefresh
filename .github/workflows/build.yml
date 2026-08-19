@@ -1,31 +1,46 @@
 name: Build Rootless Tweak (macOS)
 
 on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Install ldid
-        run: brew install ldid
+        run: |
+          brew install ldid
+
       - name: Setup Theos
         run: |
           git clone --recursive https://github.com/theos/theos.git $GITHUB_WORKSPACE/theos
           echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
+
       - name: Setup iOS SDKs
         run: |
           rm -rf $THEOS/sdks
           git clone --depth=1 https://github.com/theos/sdks.git $THEOS/sdks
           echo "SDKROOT=$THEOS/sdks/iPhoneOS16.5.sdk" >> $GITHUB_ENV
+
       - name: Fix permissions
-        run: chmod 755 layout/DEBIAN/postinst
+        run: |
+          chmod 755 layout/DEBIAN/postinst
+
       - name: Build Tweak
         run: |
           make clean
           make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
       - name: Upload DEB Artifact
         uses: actions/upload-artifact@v4
         with:
