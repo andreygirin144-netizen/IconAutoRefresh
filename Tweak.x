@@ -5,7 +5,7 @@
 
 #pragma mark - Logging
 
-static NSString * const kIARLogPath = @"/var/mobile/IconAutoRefresh.log";
+static NSString *const kIARLogPath = @"/var/mobile/IconAutoRefresh.log";
 
 static void IARLog(NSString *format, ...) {
     va_list args;
@@ -20,7 +20,8 @@ static void IARLog(NSString *format, ...) {
 
     NSString *line =
         [NSString stringWithFormat:@"[%@] %@\n",
-         [NSDate date], message];
+         [NSDate date],
+         message];
 
     NSFileManager *fm = [NSFileManager defaultManager];
 
@@ -41,430 +42,54 @@ static void IARLog(NSString *format, ...) {
     }
 }
 
-#pragma mark - Private interfaces
+#pragma mark - Private classes
 
 @interface SBIcon : NSObject
-- (NSString *)applicationBundleID;
 @end
 
-@interface SBFolder : NSObject
-- (BOOL)containsIcon:(id)icon;
-@end
-
-@interface SBRootFolder : SBFolder
+@interface SBApplicationIcon : SBIcon
 @end
 
 @interface SBIconModel : NSObject
-- (SBIcon *)expectedIconForDisplayIdentifier:(NSString *)identifier;
-- (SBIcon *)applicationIconForBundleIdentifier:(NSString *)identifier;
-- (void)addNewIconsToDesignatedLocations:(NSArray *)icons
-                           saveIconState:(BOOL)save;
-- (void)saveIconState;
 @end
 
 @interface SBHIconManager : NSObject
-- (SBIconModel *)iconModel;
-- (SBRootFolder *)rootFolder;
 @end
 
 @interface SBIconController : NSObject
 + (instancetype)sharedInstance;
-- (SBHIconManager *)iconManager;
 @end
 
 #pragma mark - Runtime helpers
 
-static void IARCallVoid(id object, SEL selector) {
-    if (!object || !selector) {
-        return;
-    }
+static id IARMsgSendID(id object, SEL selector) {
+    if (!object || !selector)
+        return nil;
 
-    if (![object respondsToSelector:selector]) {
+    if (![object respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static BOOL IARMsgSendBool(id object, SEL selector) {
+    if (!object || !selector)
+        return NO;
+
+    if (![object respondsToSelector:selector])
+        return NO;
+
+    return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static void IARMsgSendVoid(id object, SEL selector) {
+    if (!object || !selector)
         return;
-    }
+
+    if (![object respondsToSelector:selector])
+        return;
 
     ((void (*)(id, SEL))objc_msgSend)(object, selector);
-}
-
-static void IARCallVoidBool(id object, SEL selector, BOOL value) {
-    if (!object || !selector) {
-        return;
-    }
-
-    if (![object respondsToSelector:selector]) {
-        return;
-    }
-
-    ((void (*)(id, SEL, BOOL))objc_msgSend)(object, selector, value);
-}
-
-#pragma mark - Refresh Home Screen
-
-static void IARRefreshHomeScreen(void) {
-
-    IARLog(@"--------------------------------");
-    IARLog(@"BEGIN UI REFRESH");
-
-    Class rootViewClass =
-        NSClassFromString(@"SBRootFolderView");
-
-    Class iconListViewClass =
-        NSClassFromString(@"SBIconListView");
-
-    Class rootFolderControllerClass =
-        NSClassFromString(@"SBRootFolderController");
-
-    IARLog(@"SBRootFolderView = %@", rootViewClass);
-    IARLog(@"SBIconListView = %@", iconListViewClass);
-    IARLog(@"SBRootFolderController = %@", rootFolderControllerClass);
-
-    /*
-     * We intentionally try several known-style refresh methods.
-     * Every call is protected by respondsToSelector:, so an unavailable
-     * private method is simply skipped.
-     */
-
-    NSArray *rootViewMethods = @[
-        @"reload",
-        @"reloadIcons",
-        @"reloadIconViews",
-        @"updateIconViews",
-        @"updateIcons",
-        @"layoutSubviews",
-        @"setNeedsLayout",
-        @"layoutIfNeeded"
-    ];
-
-    NSArray *iconListMethods = @[
-        @"reload",
-        @"reloadIcons",
-        @"reloadIconViews",
-        @"updateIconViews",
-        @"updateIcons",
-        @"layoutSubviews",
-        @"setNeedsLayout",
-        @"layoutIfNeeded"
-    ];
-
-    /*
-     * Find the current root folder view through SBIconController.
-     */
-
-    SBIconController *controller =
-        [NSClassFromString(@"SBIconController") sharedInstance];
-
-    if (!controller) {
-        IARLog(@"UI refresh: SBIconController unavailable");
-        return;
-    }
-
-    IARLog(@"UI refresh: controller = %@", controller);
-
-    /*
-     * Traverse controller's view hierarchy.
-     */
-
-    UIView *controllerView = nil;
-
-    if ([controller isKindOfClass:[UIViewController class]]) {
-        controllerView =
-            [(UIViewController *)controller view];
-    }
-
-    if (!controllerView) {
-        IARLog(@"UI refresh: controller view unavailable");
-        return;
-    }
-
-    NSMutableArray *views =
-        [NSMutableArray arrayWithObject:controllerView];
-
-    while (views.count > 0) {
-
-        UIView *view = views.firstObject;
-        [views removeObjectAtIndex:0];
-
-        Class cls = [view class];
-
-        NSString *className =
-            NSStringFromClass(cls);
-
-        BOOL isRootView =
-            [className isEqualToString:@"SBRootFolderView"];
-
-        BOOL isIconListView =
-            [className isEqualToString:@"SBIconListView"];
-
-        if (isRootView || isIconListView) {
-
-            IARLog(@"Found icon view: %@", className);
-
-            NSArray *methods =
-                isRootView
-                ? rootViewMethods
-                : iconListMethods;
-
-            for (NSString *methodName in methods) {
-
-                SEL selector =
-                    NSSelectorFromString(methodName);
-
-                if ([view respondsToSelector:selector]) {
-
-                    IARLog(@"Calling %@ on %@",
-                           methodName,
-                           className);
-
-                    /*
-                     * UIView methods need special handling.
-                     */
-
-                    if ([methodName isEqualToString:@"setNeedsLayout"]) {
-
-                        [view setNeedsLayout];
-
-                    } else if ([methodName isEqualToString:@"layoutIfNeeded"]) {
-
-                        [view layoutIfNeeded];
-
-                    } else if ([methodName isEqualToString:@"layoutSubviews"]) {
-
-                        /*
-                         * layoutSubviews is normally not supposed to be
-                         * called directly, so don't invoke it.
-                         */
-
-                        IARLog(@"Skipping direct layoutSubviews");
-
-                    } else {
-
-                        IARCallVoid(view, selector);
-                    }
-                }
-            }
-        }
-
-        for (UIView *subview in view.subviews) {
-            [views addObject:subview];
-        }
-    }
-
-    /*
-     * Finally force UIKit layout on the visible hierarchy.
-     */
-
-    [controllerView setNeedsLayout];
-    [controllerView layoutIfNeeded];
-
-    IARLog(@"UI refresh finished");
-    IARLog(@"--------------------------------");
-}
-
-#pragma mark - Add Icon
-
-static void IARProcessBundleID(NSString *bundleID) {
-
-    if (!bundleID.length) {
-        return;
-    }
-
-    IARLog(@"================================");
-    IARLog(@"PROCESSING %@", bundleID);
-
-    Class controllerClass =
-        NSClassFromString(@"SBIconController");
-
-    if (!controllerClass) {
-        IARLog(@"SBIconController not found");
-        return;
-    }
-
-    SBIconController *controller =
-        [controllerClass sharedInstance];
-
-    if (!controller) {
-        IARLog(@"SBIconController sharedInstance = nil");
-        return;
-    }
-
-    SBHIconManager *iconManager =
-        [controller iconManager];
-
-    if (!iconManager) {
-        IARLog(@"SBHIconManager unavailable");
-        return;
-    }
-
-    SBIconModel *model =
-        [iconManager iconModel];
-
-    SBRootFolder *rootFolder =
-        [iconManager rootFolder];
-
-    if (!model || !rootFolder) {
-        IARLog(@"model/rootFolder unavailable");
-        return;
-    }
-
-    IARLog(@"Icon model = %@", model);
-    IARLog(@"Root folder = %@", rootFolder);
-
-    /*
-     * Get SBIcon.
-     */
-
-    SBIcon *icon = nil;
-
-    SEL expectedSelector =
-        @selector(expectedIconForDisplayIdentifier:);
-
-    if ([model respondsToSelector:expectedSelector]) {
-
-        icon =
-            ((id (*)(id, SEL, id))objc_msgSend)
-            (model,
-             expectedSelector,
-             bundleID);
-
-        IARLog(@"expectedIcon = %@", icon);
-    }
-
-    if (!icon &&
-        [model respondsToSelector:
-            @selector(applicationIconForBundleIdentifier:)]) {
-
-        icon =
-            ((id (*)(id, SEL, id))objc_msgSend)
-            (model,
-             @selector(applicationIconForBundleIdentifier:),
-             bundleID);
-
-        IARLog(@"applicationIcon = %@", icon);
-    }
-
-    if (!icon) {
-        IARLog(@"FAILED: SBIcon not found");
-        return;
-    }
-
-    IARLog(@"SBIcon = %@", icon);
-
-    BOOL alreadyOnHomeScreen = NO;
-
-    if ([rootFolder respondsToSelector:
-            @selector(containsIcon:)]) {
-
-        alreadyOnHomeScreen =
-            [rootFolder containsIcon:icon];
-    }
-
-    IARLog(@"containsIcon BEFORE = %d",
-           alreadyOnHomeScreen);
-
-    if (alreadyOnHomeScreen) {
-
-        IARLog(@"Icon already belongs to Home Screen");
-
-        /*
-         * Even if it already exists in the model, refresh UI.
-         */
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            IARRefreshHomeScreen();
-        });
-
-        return;
-    }
-
-    /*
-     * THIS IS THE IMPORTANT PART.
-     *
-     * This is the method your previous diagnostic log showed
-     * successfully changing containsIcon from 0 -> 1.
-     */
-
-    SEL addSelector =
-        @selector(addNewIconsToDesignatedLocations:
-                              saveIconState:);
-
-    if ([model respondsToSelector:addSelector]) {
-
-        IARLog(@"Calling addNewIconsToDesignatedLocations");
-
-        NSArray *icons =
-            @[ icon ];
-
-        ((void (*)(id, SEL, id, BOOL))objc_msgSend)
-            (model,
-             addSelector,
-             icons,
-             YES);
-
-        IARLog(@"addNewIconsToDesignatedLocations finished");
-
-    } else {
-
-        IARLog(@"ERROR: addNewIconsToDesignatedLocations unavailable");
-        return;
-    }
-
-    /*
-     * Verify model state.
-     */
-
-    BOOL afterAdd = NO;
-
-    if ([rootFolder respondsToSelector:
-            @selector(containsIcon:)]) {
-
-        afterAdd =
-            [rootFolder containsIcon:icon];
-    }
-
-    IARLog(@"containsIcon AFTER = %d", afterAdd);
-
-    if (!afterAdd) {
-        IARLog(@"ERROR: icon was not inserted into root folder");
-        return;
-    }
-
-    IARLog(@"SUCCESS: icon inserted into Home Screen model");
-
-    /*
-     * Give SpringBoard one run-loop cycle first.
-     *
-     * This is important because the icon model may send internal
-     * notifications after modifying the icon state.
-     */
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-
-        IARLog(@"Refreshing Home Screen UI");
-
-        IARRefreshHomeScreen();
-
-        /*
-         * Second refresh shortly afterwards.
-         *
-         * Some SpringBoard views update asynchronously.
-         */
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(0.25 * NSEC_PER_SEC)
-            ),
-            dispatch_get_main_queue(),
-            ^{
-
-                IARLog(@"Second Home Screen UI refresh");
-
-                IARRefreshHomeScreen();
-
-                IARLog(@"Icon processing complete");
-            }
-        );
-    });
 }
 
 #pragma mark - LaunchServices
@@ -479,36 +104,27 @@ static NSArray *IARGetInstalledApplications(void) {
         return nil;
     }
 
-    id workspace = nil;
+    SEL defaultWorkspaceSEL =
+        NSSelectorFromString(@"defaultWorkspace");
 
-    SEL defaultSelector =
-        @selector(defaultWorkspace);
-
-    if ([workspaceClass respondsToSelector:defaultSelector]) {
-
-        workspace =
-            ((id (*)(id, SEL))objc_msgSend)
-            (workspaceClass,
-             defaultSelector);
-    }
+    id workspace =
+        IARMsgSendID(workspaceClass, defaultWorkspaceSEL);
 
     if (!workspace) {
         IARLog(@"defaultWorkspace unavailable");
         return nil;
     }
 
-    SEL appsSelector =
-        @selector(allInstalledApplications);
+    SEL allAppsSEL =
+        NSSelectorFromString(@"allInstalledApplications");
 
-    if (![workspace respondsToSelector:appsSelector]) {
+    NSArray *apps =
+        IARMsgSendID(workspace, allAppsSEL);
+
+    if (!apps) {
         IARLog(@"allInstalledApplications unavailable");
         return nil;
     }
-
-    NSArray *apps =
-        ((id (*)(id, SEL))objc_msgSend)
-        (workspace,
-         appsSelector);
 
     IARLog(@"LaunchServices returned %lu applications",
            (unsigned long)apps.count);
@@ -518,12 +134,10 @@ static NSArray *IARGetInstalledApplications(void) {
 
 static NSArray *IARGetBundleIDs(void) {
 
-    NSArray *apps =
-        IARGetInstalledApplications();
+    NSArray *apps = IARGetInstalledApplications();
 
-    if (!apps) {
+    if (!apps)
         return nil;
-    }
 
     NSMutableArray *result =
         [NSMutableArray array];
@@ -532,44 +146,502 @@ static NSArray *IARGetBundleIDs(void) {
 
         NSString *bundleID = nil;
 
-        if ([app respondsToSelector:
-                @selector(bundleIdentifier)]) {
+        SEL bundleIDSEL =
+            NSSelectorFromString(@"bundleIdentifier");
 
+        if ([app respondsToSelector:bundleIDSEL]) {
             bundleID =
-                ((id (*)(id, SEL))objc_msgSend)
-                (app,
-                 @selector(bundleIdentifier));
-
-        } else if ([app respondsToSelector:
-                       @selector(applicationIdentifier)]) {
-
-            bundleID =
-                ((id (*)(id, SEL))objc_msgSend)
-                (app,
-                 @selector(applicationIdentifier));
+                IARMsgSendID(app, bundleIDSEL);
         }
 
-        if (bundleID.length) {
+        if (!bundleID) {
+            SEL applicationIdentifierSEL =
+                NSSelectorFromString(@"applicationIdentifier");
+
+            if ([app respondsToSelector:
+                 applicationIdentifierSEL]) {
+
+                bundleID =
+                    IARMsgSendID(
+                        app,
+                        applicationIdentifierSEL
+                    );
+            }
+        }
+
+        if (bundleID.length > 0)
             [result addObject:bundleID];
-        }
     }
 
     return result;
 }
 
-#pragma mark - Polling
+#pragma mark - SpringBoard objects
 
-static NSMutableSet<NSString *> *gKnownBundleIDs;
+static id IARGetIconController(void) {
+
+    Class cls =
+        NSClassFromString(@"SBIconController");
+
+    if (!cls) {
+        IARLog(@"SBIconController not found");
+        return nil;
+    }
+
+    SEL sharedSEL =
+        NSSelectorFromString(@"sharedInstance");
+
+    id controller =
+        IARMsgSendID(cls, sharedSEL);
+
+    if (!controller)
+        IARLog(@"SBIconController sharedInstance = nil");
+
+    return controller;
+}
+
+static id IARGetIconManager(id controller) {
+
+    SEL selector =
+        NSSelectorFromString(@"iconManager");
+
+    id manager =
+        IARMsgSendID(controller, selector);
+
+    if (!manager)
+        IARLog(@"iconManager unavailable");
+
+    return manager;
+}
+
+static id IARGetIconModel(id manager) {
+
+    SEL selector =
+        NSSelectorFromString(@"iconModel");
+
+    id model =
+        IARMsgSendID(manager, selector);
+
+    if (!model)
+        IARLog(@"iconModel unavailable");
+
+    return model;
+}
+
+#pragma mark - Icon lookup
+
+static id IARGetIconForBundleID(id model,
+                                NSString *bundleID) {
+
+    if (!model || !bundleID)
+        return nil;
+
+    SEL expectedSEL =
+        NSSelectorFromString(
+            @"expectedIconForDisplayIdentifier:"
+        );
+
+    if ([model respondsToSelector:expectedSEL]) {
+
+        id icon =
+            ((id (*)(id, SEL, id))objc_msgSend)(
+                model,
+                expectedSEL,
+                bundleID
+            );
+
+        if (icon) {
+            IARLog(@"expectedIconForDisplayIdentifier: %@",
+                   icon);
+
+            return icon;
+        }
+    }
+
+    SEL applicationSEL =
+        NSSelectorFromString(
+            @"applicationIconForBundleIdentifier:"
+        );
+
+    if ([model respondsToSelector:applicationSEL]) {
+
+        id icon =
+            ((id (*)(id, SEL, id))objc_msgSend)(
+                model,
+                applicationSEL,
+                bundleID
+            );
+
+        if (icon) {
+            IARLog(@"applicationIconForBundleIdentifier: %@",
+                   icon);
+
+            return icon;
+        }
+    }
+
+    IARLog(@"Could not obtain icon for %@",
+           bundleID);
+
+    return nil;
+}
+
+#pragma mark - Root folder
+
+static id IARGetRootFolder(id manager) {
+
+    SEL selector =
+        NSSelectorFromString(@"rootFolder");
+
+    return IARMsgSendID(manager, selector);
+}
+
+static BOOL IARRootContainsIcon(id rootFolder,
+                                id icon) {
+
+    if (!rootFolder || !icon)
+        return NO;
+
+    SEL selector =
+        NSSelectorFromString(@"containsIcon:");
+
+    if (![rootFolder respondsToSelector:selector])
+        return NO;
+
+    return ((BOOL (*)(id, SEL, id))objc_msgSend)(
+        rootFolder,
+        selector,
+        icon
+    );
+}
+
+#pragma mark - Icon state refresh
+
+static void IARRefreshIconState(void) {
+
+    IARLog(@"================================");
+    IARLog(@"Starting icon state refresh");
+
+    id controller =
+        IARGetIconController();
+
+    if (!controller)
+        return;
+
+    id manager =
+        IARGetIconManager(controller);
+
+    if (!manager)
+        return;
+
+    id model =
+        IARGetIconModel(manager);
+
+    if (!model)
+        return;
+
+    /*
+     * These selectors vary between iOS versions.
+     * We only call them when they actually exist.
+     */
+
+    NSArray *refreshSelectors = @[
+        @"reloadIconState",
+        @"reloadIconStateFromDisk",
+        @"_reloadIconState",
+        @"_reloadIconStateFromDisk",
+        @"updateIconState",
+        @"_updateIconState",
+        @"rebuildIconState",
+        @"_rebuildIconState"
+    ];
+
+    BOOL called = NO;
+
+    for (NSString *name in refreshSelectors) {
+
+        SEL selector =
+            NSSelectorFromString(name);
+
+        if ([model respondsToSelector:selector]) {
+
+            IARLog(@"Calling model selector: %@",
+                   name);
+
+            IARMsgSendVoid(model, selector);
+
+            called = YES;
+            break;
+        }
+    }
+
+    if (!called) {
+        IARLog(@"No icon-model refresh selector found");
+    }
+
+    /*
+     * Also ask SpringBoard / icon manager to update
+     * if the corresponding method exists.
+     */
+
+    NSArray *managerSelectors = @[
+        @"reloadIconState",
+        @"_reloadIconState",
+        @"updateIconState",
+        @"_updateIconState"
+    ];
+
+    for (NSString *name in managerSelectors) {
+
+        SEL selector =
+            NSSelectorFromString(name);
+
+        if ([manager respondsToSelector:selector]) {
+
+            IARLog(@"Calling manager selector: %@",
+                   name);
+
+            IARMsgSendVoid(manager, selector);
+            break;
+        }
+    }
+
+    IARLog(@"Icon state refresh finished");
+}
+
+#pragma mark - Force insertion
+
+static BOOL IARTryInsertIcon(id model,
+                             id manager,
+                             id controller,
+                             id icon) {
+
+    if (!icon)
+        return NO;
+
+    /*
+     * Different iOS versions expose different insertion
+     * methods. Check the actual runtime instead of assuming
+     * a selector exists.
+     */
+
+    NSArray *targets = @[
+        controller ?: [NSNull null],
+        manager ?: [NSNull null],
+        model ?: [NSNull null]
+    ];
+
+    NSArray *selectors = @[
+        @"addNewIconToFirstAvailablePage:animate:",
+        @"addIconToFirstAvailablePage:animate:",
+        @"addIcon:toFirstAvailablePageWithAnimation:",
+        @"addIconToFirstAvailablePage:"
+    ];
+
+    for (id target in targets) {
+
+        if (target == [NSNull null])
+            continue;
+
+        for (NSString *name in selectors) {
+
+            SEL selector =
+                NSSelectorFromString(name);
+
+            if (![target respondsToSelector:selector])
+                continue;
+
+            IARLog(@"FOUND insertion selector %@ on %@",
+                   name,
+                   NSStringFromClass(
+                       [target class]
+                   ));
+
+            if ([name hasSuffix:@"animate:"]) {
+
+                ((void (*)(id, SEL, id, BOOL))objc_msgSend)(
+                    target,
+                    selector,
+                    icon,
+                    NO
+                );
+
+            } else {
+
+                ((void (*)(id, SEL, id))objc_msgSend)(
+                    target,
+                    selector,
+                    icon
+                );
+            }
+
+            return YES;
+        }
+    }
+
+    IARLog(@"No runtime insertion selector available");
+
+    return NO;
+}
+
+#pragma mark - Process application
+
+static void IARProcessBundleID(NSString *bundleID) {
+
+    if (!bundleID.length)
+        return;
+
+    IARLog(@"================================");
+    IARLog(@"PROCESSING %@", bundleID);
+
+    id controller =
+        IARGetIconController();
+
+    if (!controller)
+        return;
+
+    id manager =
+        IARGetIconManager(controller);
+
+    if (!manager)
+        return;
+
+    id model =
+        IARGetIconModel(manager);
+
+    if (!model)
+        return;
+
+    id rootFolder =
+        IARGetRootFolder(manager);
+
+    id icon =
+        IARGetIconForBundleID(
+            model,
+            bundleID
+        );
+
+    if (!icon) {
+        IARLog(@"Icon unavailable yet");
+
+        /*
+         * TrollStore/LaunchServices may finish registering
+         * the application slightly after it appears in the
+         * application list.
+         */
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(2.0 * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                IARProcessBundleID(bundleID);
+            }
+        );
+
+        return;
+    }
+
+    if (rootFolder &&
+        IARRootContainsIcon(rootFolder, icon)) {
+
+        IARLog(@"Icon is already on Home Screen");
+        return;
+    }
+
+    IARLog(@"Icon is NOT on Home Screen");
+
+    BOOL inserted =
+        IARTryInsertIcon(
+            model,
+            manager,
+            controller,
+            icon
+        );
+
+    if (inserted) {
+
+        IARLog(@"Icon insertion method executed");
+
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(0.5 * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                IARRefreshIconState();
+            }
+        );
+
+    } else {
+
+        /*
+         * On iOS versions where direct insertion isn't
+         * exported, refresh the icon state and retry.
+         */
+
+        IARLog(@"Direct insertion unavailable");
+        IARLog(@"Trying icon-state refresh");
+
+        IARRefreshIconState();
+
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(1.0 * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                id newController =
+                    IARGetIconController();
+
+                id newManager =
+                    IARGetIconManager(newController);
+
+                id newModel =
+                    IARGetIconModel(newManager);
+
+                id newIcon =
+                    IARGetIconForBundleID(
+                        newModel,
+                        bundleID
+                    );
+
+                if (newIcon) {
+
+                    IARLog(@"Retrying insertion");
+
+                    if (IARTryInsertIcon(
+                            newModel,
+                            newManager,
+                            newController,
+                            newIcon)) {
+
+                        IARLog(@"Retry succeeded");
+
+                    } else {
+
+                        IARLog(@"Retry failed");
+                    }
+                }
+            }
+        );
+    }
+}
+
+#pragma mark - New application detection
+
+static NSMutableSet *gKnownBundleIDs;
 
 static void IARPoll(void) {
 
     NSArray *current =
         IARGetBundleIDs();
 
-    if (!current) {
-        IARLog(@"POLL: unable to get applications");
+    if (!current)
         return;
-    }
 
     NSMutableSet *currentSet =
         [NSMutableSet setWithArray:current];
@@ -595,7 +667,7 @@ static void IARPoll(void) {
         IARLog(@"No new applications");
 
         gKnownBundleIDs =
-            currentSet;
+            [currentSet mutableCopy];
 
         return;
     }
@@ -605,20 +677,29 @@ static void IARPoll(void) {
 
     for (NSString *bundleID in newApps) {
 
-        IARLog(@"NEW BUNDLE ID: %@", bundleID);
+        IARLog(@"NEW BUNDLE ID: %@",
+               bundleID);
 
         /*
-         * Always perform icon manipulation on main thread.
+         * Give LaunchServices/TrollStore a little time to
+         * finish registering the icon before touching
+         * SpringBoard's icon model.
          */
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-
-            IARProcessBundleID(bundleID);
-        });
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(1.5 * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                IARProcessBundleID(bundleID);
+            }
+        );
     }
 
     gKnownBundleIDs =
-        currentSet;
+        [currentSet mutableCopy];
 }
 
 #pragma mark - Constructor
@@ -627,66 +708,80 @@ static void IARPoll(void) {
 
     @autoreleasepool {
 
-        IARLog(@"\n================================");
+        IARLog(@"================================");
         IARLog(@"IconAutoRefresh loaded");
         IARLog(@"================================");
 
         /*
-         * Everything below is intentionally kept simple.
-         *
-         * TrollStore Lite may not generate the Darwin notifications
-         * expected from normal App Store installation, so polling
-         * remains the reliable detection mechanism.
+         * Wait until SpringBoard has completed startup.
          */
-
-        dispatch_queue_t queue =
-            dispatch_get_global_queue(
-                QOS_CLASS_UTILITY,
-                0
-            );
-
-        dispatch_source_t timer =
-            dispatch_source_create(
-                DISPATCH_SOURCE_TYPE_TIMER,
-                0,
-                0,
-                queue
-            );
-
-        if (!timer) {
-            IARLog(@"ERROR: could not create timer");
-            return;
-        }
-
-        IARLog(@"Creating polling timer");
-
-        dispatch_source_set_timer(
-            timer,
+        dispatch_after(
             dispatch_time(
                 DISPATCH_TIME_NOW,
-                2 * NSEC_PER_SEC
+                (int64_t)(5.0 * NSEC_PER_SEC)
             ),
-            3 * NSEC_PER_SEC,
-            500 * NSEC_PER_MSEC
-        );
-
-        dispatch_source_set_event_handler(
-            timer,
+            dispatch_get_main_queue(),
             ^{
 
-                IARLog(@"Timer fired");
+                IARLog(@"Creating polling timer");
+
+                dispatch_queue_t queue =
+                    dispatch_queue_create(
+                        "com.custom.iconautorefresh.poll",
+                        DISPATCH_QUEUE_SERIAL
+                    );
+
+                dispatch_source_t timer =
+                    dispatch_source_create(
+                        DISPATCH_SOURCE_TYPE_TIMER,
+                        0,
+                        0,
+                        queue
+                    );
+
+                if (!timer) {
+                    IARLog(@"ERROR: timer creation failed");
+                    return;
+                }
 
                 /*
-                 * Keep LaunchServices enumeration off SpringBoard's
-                 * main thread.
+                 * First poll after 1 second.
+                 * Then every 3 seconds.
                  */
+                dispatch_source_set_timer(
+                    timer,
+                    dispatch_time(
+                        DISPATCH_TIME_NOW,
+                        (int64_t)(1.0 * NSEC_PER_SEC)
+                    ),
+                    (uint64_t)(3.0 * NSEC_PER_SEC),
+                    (uint64_t)(0.5 * NSEC_PER_SEC)
+                );
 
-                IARPoll();
+                dispatch_source_set_event_handler(
+                    timer,
+                    ^{
+
+                        dispatch_async(
+                            dispatch_get_main_queue(),
+                            ^{
+                                IARLog(@"Timer fired");
+                                IARPoll();
+                            }
+                        );
+                    }
+                );
+
+                dispatch_resume(timer);
+
+                /*
+                 * Keep the dispatch source alive.
+                 */
+                static dispatch_source_t sTimer;
+                sTimer = timer;
+
+                IARLog(@"Polling timer started successfully");
             }
         );
-
-        dispatch_resume(timer);
-
-        IARLog(@"Polling timer started successfully");
     }
 }
