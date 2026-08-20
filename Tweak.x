@@ -1,17 +1,20 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
 #import <objc/message.h>
 
 #pragma mark - Logging
 
-static NSString *const kIARLogPath = @"/var/mobile/IconAutoRefresh.log";
+static NSString *const kIARLogPath =
+    @"/var/mobile/IconAutoRefresh.log";
 
 static void IARLog(NSString *format, ...) {
     va_list args;
     va_start(args, format);
 
     NSString *message =
-        [[NSString alloc] initWithFormat:format arguments:args];
+        [[NSString alloc] initWithFormat:format
+                              arguments:args];
 
     va_end(args);
 
@@ -22,7 +25,8 @@ static void IARLog(NSString *format, ...) {
          [NSDate date],
          message];
 
-    NSFileManager *fm = [NSFileManager defaultManager];
+    NSFileManager *fm =
+        [NSFileManager defaultManager];
 
     if (![fm fileExistsAtPath:kIARLogPath]) {
         [fm createFileAtPath:kIARLogPath
@@ -44,519 +48,551 @@ static void IARLog(NSString *format, ...) {
     }
 }
 
-#pragma mark - Private classes
+#pragma mark - Method information
 
-@interface SBIcon : NSObject
-- (NSString *)applicationBundleID;
-@end
-
-@interface SBRootFolder : NSObject
-- (BOOL)containsIcon:(id)icon;
-@end
-
-@interface SBIconModel : NSObject
-- (id)expectedIconForDisplayIdentifier:(NSString *)identifier;
-- (id)applicationIconForBundleIdentifier:(NSString *)identifier;
-- (id)addApplicationIconForBundleIdentifier:(NSString *)identifier;
-@end
-
-@interface SBHIconManager : NSObject
-- (SBIconModel *)iconModel;
-- (SBRootFolder *)rootFolder;
-@end
-
-@interface SBIconController : NSObject
-+ (instancetype)sharedInstance;
-- (SBHIconManager *)iconManager;
-@end
-
-#pragma mark - Globals
-
-static NSMutableSet<NSString *> *gKnownBundleIDs;
-static dispatch_source_t gPollTimer;
-
-#pragma mark - LaunchServices
-
-static NSArray<NSString *> *IARGetInstalledBundleIDs(void) {
-
-    Class workspaceClass =
-        NSClassFromString(@"LSApplicationWorkspace");
-
-    if (!workspaceClass) {
-        IARLog(@"LSApplicationWorkspace not found");
-        return nil;
+static NSString *IARTypeEncodingDescription(const char *types) {
+    if (!types) {
+        return @"(null)";
     }
 
-    id workspace = nil;
-
-    SEL defaultWorkspace =
-        NSSelectorFromString(@"defaultWorkspace");
-
-    if ([workspaceClass respondsToSelector:defaultWorkspace]) {
-
-        id (*msgSend)(id, SEL) =
-            (id (*)(id, SEL))objc_msgSend;
-
-        workspace =
-            msgSend(workspaceClass, defaultWorkspace);
-    }
-
-    if (!workspace) {
-        IARLog(@"defaultWorkspace returned nil");
-        return nil;
-    }
-
-    SEL allInstalled =
-        NSSelectorFromString(@"allInstalledApplications");
-
-    if (![workspace respondsToSelector:allInstalled]) {
-        IARLog(@"allInstalledApplications unavailable");
-        return nil;
-    }
-
-    NSArray *applications = nil;
-
-    NSArray *(*msgSendArray)(id, SEL) =
-        (NSArray *(*)(id, SEL))objc_msgSend;
-
-    applications =
-        msgSendArray(workspace, allInstalled);
-
-    if (!applications) {
-        IARLog(@"LaunchServices returned nil");
-        return nil;
-    }
-
-    NSMutableArray *result =
-        [NSMutableArray array];
-
-    for (id app in applications) {
-
-        NSString *bundleID = nil;
-
-        SEL bundleIdentifier =
-            NSSelectorFromString(@"bundleIdentifier");
-
-        if ([app respondsToSelector:bundleIdentifier]) {
-
-            NSString *(*getString)(id, SEL) =
-                (NSString *(*)(id, SEL))objc_msgSend;
-
-            bundleID =
-                getString(app, bundleIdentifier);
-        }
-
-        if (bundleID.length > 0) {
-            [result addObject:bundleID];
-        }
-    }
-
-    IARLog(@"LaunchServices returned %lu applications",
-           (unsigned long)result.count);
-
-    return result;
+    return [NSString stringWithUTF8String:types];
 }
 
-#pragma mark - Add icon
+static BOOL IARMethodLooksInteresting(SEL selector) {
 
-static BOOL IARAddIconForBundleID(NSString *bundleID) {
+    NSString *name =
+        NSStringFromSelector(selector).lowercaseString;
 
-    if (bundleID.length == 0) {
-        return NO;
+    NSArray<NSString *> *keywords = @[
+        @"icon",
+        @"add",
+        @"insert",
+        @"place",
+        @"append",
+        @"remove",
+        @"delete",
+        @"folder",
+        @"page",
+        @"model",
+        @"layout",
+        @"home",
+        @"root",
+        @"application",
+        @"display",
+        @"move",
+        @"reorder",
+        @"position",
+        @"state",
+        @"save",
+        @"update",
+        @"refresh",
+        @"reload",
+        @"install"
+    ];
+
+    for (NSString *keyword in keywords) {
+        if ([name containsString:keyword]) {
+            return YES;
+        }
     }
 
-    IARLog(@"--------------------------------");
-    IARLog(@"Trying to add icon: %@", bundleID);
+    return NO;
+}
+
+#pragma mark - Dump class methods
+
+static void IARDumpClassMethods(Class cls) {
+
+    if (!cls) {
+        return;
+    }
+
+    NSString *className =
+        NSStringFromClass(cls);
+
+    IARLog(@"");
+    IARLog(@"========================================");
+    IARLog(@"CLASS: %@", className);
+    IARLog(@"========================================");
+
+    unsigned int count = 0;
+
+    Method *methods =
+        class_copyMethodList(cls, &count);
+
+    if (!methods) {
+        IARLog(@"No instance methods returned");
+        return;
+    }
+
+    NSMutableArray<NSString *> *interesting =
+        [NSMutableArray array];
+
+    NSMutableArray<NSString *> *all =
+        [NSMutableArray array];
+
+    for (unsigned int i = 0; i < count; i++) {
+
+        Method method = methods[i];
+
+        SEL selector =
+            method_getName(method);
+
+        const char *types =
+            method_getTypeEncoding(method);
+
+        NSString *entry =
+            [NSString stringWithFormat:
+                @"%@    [%@]",
+                NSStringFromSelector(selector),
+                IARTypeEncodingDescription(types)];
+
+        [all addObject:entry];
+
+        if (IARMethodLooksInteresting(selector)) {
+            [interesting addObject:entry];
+        }
+    }
+
+    free(methods);
+
+    /*
+     * First print interesting methods.
+     */
+
+    IARLog(@"INTERESTING METHODS: %lu",
+           (unsigned long)interesting.count);
+
+    for (NSString *entry in interesting) {
+        IARLog(@"%@", entry);
+    }
+
+    /*
+     * Then print the complete list.
+     *
+     * This is useful if the real insertion method has
+     * an unexpected name.
+     */
+
+    IARLog(@"");
+    IARLog(@"ALL INSTANCE METHODS: %lu",
+           (unsigned long)all.count);
+
+    for (NSString *entry in all) {
+        IARLog(@"%@", entry);
+    }
+}
+
+#pragma mark - Dump class hierarchy
+
+static void IARDumpHierarchy(Class cls) {
+
+    IARLog(@"");
+    IARLog(@"========================================");
+    IARLog(@"CLASS HIERARCHY");
+    IARLog(@"========================================");
+
+    Class current = cls;
+
+    while (current) {
+
+        IARLog(@"%@", NSStringFromClass(current));
+
+        current =
+            class_getSuperclass(current);
+    }
+}
+
+#pragma mark - Dump protocol information
+
+static void IARDumpProtocols(Class cls) {
+
+    if (!cls) {
+        return;
+    }
+
+    IARLog(@"");
+    IARLog(@"========================================");
+    IARLog(@"PROTOCOLS: %@", NSStringFromClass(cls));
+    IARLog(@"========================================");
+
+    unsigned int count = 0;
+
+    Protocol *__unsafe_unretained *protocols =
+        class_copyProtocolList(cls, &count);
+
+    if (!protocols) {
+        IARLog(@"No protocols");
+        return;
+    }
+
+    for (unsigned int i = 0; i < count; i++) {
+
+        Protocol *protocol =
+            protocols[i];
+
+        const char *name =
+            protocol_getName(protocol);
+
+        if (name) {
+            IARLog(@"%@", [NSString stringWithUTF8String:name]);
+        }
+    }
+
+    free(protocols);
+}
+
+#pragma mark - Dump class
+
+static void IARDumpClass(NSString *name) {
+
+    IARLog(@"");
+    IARLog(@"########################################");
+    IARLog(@"INSPECTING %@", name);
+    IARLog(@"########################################");
+
+    Class cls =
+        NSClassFromString(name);
+
+    if (!cls) {
+        IARLog(@"CLASS NOT FOUND: %@", name);
+        return;
+    }
+
+    IARLog(@"Class found: %@", cls);
+
+    IARDumpHierarchy(cls);
+    IARDumpProtocols(cls);
+    IARDumpClassMethods(cls);
+}
+
+#pragma mark - Existing instance diagnostics
+
+static void IARInspectLiveObjects(void) {
+
+    IARLog(@"");
+    IARLog(@"########################################");
+    IARLog(@"LIVE SPRINGBOARD OBJECTS");
+    IARLog(@"########################################");
 
     Class controllerClass =
         NSClassFromString(@"SBIconController");
 
     if (!controllerClass) {
         IARLog(@"SBIconController not found");
-        return NO;
+        return;
     }
 
-    SBIconController *controller =
-        [controllerClass sharedInstance];
+    SEL sharedSelector =
+        NSSelectorFromString(@"sharedInstance");
+
+    if (![controllerClass respondsToSelector:sharedSelector]) {
+        IARLog(@"sharedInstance unavailable");
+        return;
+    }
+
+    id (*getShared)(id, SEL) =
+        (id (*)(id, SEL))objc_msgSend;
+
+    id controller =
+        getShared(controllerClass,
+                  sharedSelector);
+
+    IARLog(@"SBIconController = %@", controller);
 
     if (!controller) {
-        IARLog(@"SBIconController sharedInstance = nil");
-        return NO;
+        return;
     }
-
-    SBHIconManager *manager = nil;
 
     SEL iconManagerSelector =
         NSSelectorFromString(@"iconManager");
 
     if ([controller respondsToSelector:iconManagerSelector]) {
 
-        SBHIconManager *(*getManager)(id, SEL) =
-            (SBHIconManager *(*)(id, SEL))objc_msgSend;
+        id (*getManager)(id, SEL) =
+            (id (*)(id, SEL))objc_msgSend;
 
-        manager =
-            getManager(controller, iconManagerSelector);
-    }
+        id manager =
+            getManager(controller,
+                       iconManagerSelector);
 
-    if (!manager) {
-        IARLog(@"SBHIconManager unavailable");
-        return NO;
-    }
+        IARLog(@"SBHIconManager = %@", manager);
 
-    SBIconModel *model = nil;
+        if (manager) {
 
-    SEL modelSelector =
-        NSSelectorFromString(@"iconModel");
+            SEL modelSelector =
+                NSSelectorFromString(@"iconModel");
 
-    if ([manager respondsToSelector:modelSelector]) {
+            if ([manager respondsToSelector:modelSelector]) {
 
-        SBIconModel *(*getModel)(id, SEL) =
-            (SBIconModel *(*)(id, SEL))objc_msgSend;
+                id (*getModel)(id, SEL) =
+                    (id (*)(id, SEL))objc_msgSend;
 
-        model =
-            getModel(manager, modelSelector);
-    }
+                id model =
+                    getModel(manager,
+                             modelSelector);
 
-    if (!model) {
-        IARLog(@"SBIconModel unavailable");
-        return NO;
-    }
+                IARLog(@"SBIconModel = %@", model);
+            }
 
-    id icon = nil;
+            SEL rootSelector =
+                NSSelectorFromString(@"rootFolder");
 
-    /*
-     * First try expectedIconForDisplayIdentifier:
-     */
+            if ([manager respondsToSelector:rootSelector]) {
 
-    SEL expectedSelector =
-        NSSelectorFromString(
-            @"expectedIconForDisplayIdentifier:");
+                id (*getRoot)(id, SEL) =
+                    (id (*)(id, SEL))objc_msgSend;
 
-    if ([model respondsToSelector:expectedSelector]) {
+                id root =
+                    getRoot(manager,
+                            rootSelector);
 
-        id (*getIcon)(id, SEL, NSString *) =
-            (id (*)(id, SEL, NSString *))objc_msgSend;
-
-        icon =
-            getIcon(model,
-                    expectedSelector,
-                    bundleID);
-
-        IARLog(@"expectedIcon = %@", icon);
-    }
-
-    /*
-     * Fallback.
-     */
-
-    if (!icon) {
-
-        SEL applicationSelector =
-            NSSelectorFromString(
-                @"applicationIconForBundleIdentifier:");
-
-        if ([model respondsToSelector:applicationSelector]) {
-
-            id (*getIcon)(id, SEL, NSString *) =
-                (id (*)(id, SEL, NSString *))objc_msgSend;
-
-            icon =
-                getIcon(model,
-                        applicationSelector,
-                        bundleID);
-
-            IARLog(@"applicationIcon = %@", icon);
+                IARLog(@"SBRootFolder = %@", root);
+            }
         }
     }
-
-    if (!icon) {
-
-        SEL addSelector =
-            NSSelectorFromString(
-                @"addApplicationIconForBundleIdentifier:");
-
-        if ([model respondsToSelector:addSelector]) {
-
-            id (*addIcon)(id, SEL, NSString *) =
-                (id (*)(id, SEL, NSString *))objc_msgSend;
-
-            icon =
-                addIcon(model,
-                        addSelector,
-                        bundleID);
-
-            IARLog(@"addApplicationIcon = %@", icon);
-        }
-    }
-
-    if (!icon) {
-        IARLog(@"FAILED: could not obtain SBIcon");
-        return NO;
-    }
-
-    IARLog(@"SBIcon obtained: %@", icon);
-
-    /*
-     * Check root folder.
-     */
-
-    SBRootFolder *rootFolder = nil;
-
-    SEL rootSelector =
-        NSSelectorFromString(@"rootFolder");
-
-    if ([manager respondsToSelector:rootSelector]) {
-
-        SBRootFolder *(*getRoot)(id, SEL) =
-            (SBRootFolder *(*)(id, SEL))objc_msgSend;
-
-        rootFolder =
-            getRoot(manager, rootSelector);
-    }
-
-    if (!rootFolder) {
-        IARLog(@"SBRootFolder unavailable");
-        return NO;
-    }
-
-    BOOL alreadyOnHomeScreen = NO;
-
-    SEL containsSelector =
-        NSSelectorFromString(@"containsIcon:");
-
-    if ([rootFolder respondsToSelector:containsSelector]) {
-
-        BOOL (*contains)(id, SEL, id) =
-            (BOOL (*)(id, SEL, id))objc_msgSend;
-
-        alreadyOnHomeScreen =
-            contains(rootFolder,
-                     containsSelector,
-                     icon);
-    }
-
-    IARLog(@"containsIcon = %d",
-           alreadyOnHomeScreen);
-
-    if (alreadyOnHomeScreen) {
-        IARLog(@"Icon already on Home Screen");
-        return YES;
-    }
-
-    /*
-     * IMPORTANT:
-     *
-     * Your previous log showed that the old
-     * addNewIconToFirstAvailablePage:animate:
-     * selector DOES NOT exist on iOS 17.7.1.
-     *
-     * Therefore don't call it blindly.
-     *
-     * Try the icon model's insertion methods instead.
-     */
-
-    SEL addToFirstPage =
-        NSSelectorFromString(
-            @"addIcon:toFirstAvailablePage:");
-
-    if ([model respondsToSelector:addToFirstPage]) {
-
-        void (*call)(id, SEL, id, BOOL) =
-            (void (*)(id, SEL, id, BOOL))objc_msgSend;
-
-        call(model,
-             addToFirstPage,
-             icon,
-             YES);
-
-        IARLog(@"Called addIcon:toFirstAvailablePage:");
-
-        return YES;
-    }
-
-    /*
-     * Another possible private API.
-     */
-
-    SEL placeSelector =
-        NSSelectorFromString(
-            @"placeIcon:inRootFolder:");
-
-    if ([model respondsToSelector:placeSelector]) {
-
-        void (*call)(id, SEL, id, id) =
-            (void (*)(id, SEL, id, id))objc_msgSend;
-
-        call(model,
-             placeSelector,
-             icon,
-             rootFolder);
-
-        IARLog(@"Called placeIcon:inRootFolder:");
-
-        return YES;
-    }
-
-    IARLog(@"NO SUPPORTED ICON INSERTION METHOD FOUND");
-
-    /*
-     * Don't pretend success.
-     */
-
-    return NO;
 }
 
-#pragma mark - Delayed processing
+#pragma mark - Runtime class enumeration
 
-static void IARProcessNewApplication(NSString *bundleID) {
+static void IARFindRelatedClasses(void) {
 
-    if (bundleID.length == 0) {
+    IARLog(@"");
+    IARLog(@"########################################");
+    IARLog(@"RELATED RUNTIME CLASSES");
+    IARLog(@"########################################");
+
+    int classCount =
+        objc_getClassList(NULL, 0);
+
+    if (classCount <= 0) {
+        IARLog(@"objc_getClassList returned 0");
         return;
     }
 
-    /*
-     * TrollStore Lite can register the application first,
-     * while SpringBoard's icon model becomes ready slightly later.
-     *
-     * Retry several times.
-     */
+    Class *classes =
+        (__unsafe_unretained Class *)
+        malloc(sizeof(Class) * classCount);
 
-    NSArray<NSNumber *> *delays = @[
-        @1,
-        @3,
-        @6,
-        @10
+    if (!classes) {
+        IARLog(@"Could not allocate class list");
+        return;
+    }
+
+    classCount =
+        objc_getClassList(classes,
+                          classCount);
+
+    NSArray<NSString *> *prefixes = @[
+        @"SBIcon",
+        @"SBHIcon",
+        @"SBRoot",
+        @"SBFolder",
+        @"SBApplication",
+        @"SBHome",
+        @"SBPage"
     ];
 
-    for (NSNumber *delayNumber in delays) {
+    NSMutableArray<NSString *> *names =
+        [NSMutableArray array];
 
-        NSTimeInterval delay =
-            delayNumber.doubleValue;
+    for (int i = 0; i < classCount; i++) {
 
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(delay *
-                          NSEC_PER_SEC)),
-            dispatch_get_main_queue(),
-            ^{
+        Class cls = classes[i];
 
-                IARLog(@"Retry %.0fs for %@",
-                       delay,
-                       bundleID);
+        const char *cname =
+            class_getName(cls);
 
-                IARAddIconForBundleID(bundleID);
+        if (!cname) {
+            continue;
+        }
+
+        NSString *name =
+            [NSString stringWithUTF8String:cname];
+
+        for (NSString *prefix in prefixes) {
+
+            if ([name hasPrefix:prefix]) {
+                [names addObject:name];
+                break;
             }
-        );
+        }
+    }
+
+    free(classes);
+
+    [names sortUsingSelector:
+        @selector(localizedCaseInsensitiveCompare:)];
+
+    IARLog(@"Found %lu related classes",
+           (unsigned long)names.count);
+
+    for (NSString *name in names) {
+        IARLog(@"%@", name);
     }
 }
 
-#pragma mark - Poll
+#pragma mark - Inspect selectors individually
 
-static void IARPoll(void) {
+static void IARCheckImportantSelectors(void) {
+
+    IARLog(@"");
+    IARLog(@"########################################");
+    IARLog(@"IMPORTANT SELECTOR CHECK");
+    IARLog(@"########################################");
+
+    NSArray<NSDictionary *> *checks = @[
+        @{
+            @"class": @"SBIconModel",
+            @"selectors": @[
+                @"expectedIconForDisplayIdentifier:",
+                @"applicationIconForBundleIdentifier:",
+                @"addApplicationIconForBundleIdentifier:",
+                @"addIcon:toFirstAvailablePage:",
+                @"placeIcon:inRootFolder:",
+                @"addIcon:",
+                @"insertIcon:",
+                @"insertIcon:atIndexPath:",
+                @"addIcon:toFolder:",
+                @"addIcon:toPage:",
+                @"saveIconState",
+                @"saveIconState:",
+                @"reload",
+                @"reloadIconState",
+                @"updateIconState"
+            ]
+        },
+
+        @{
+            @"class": @"SBHIconManager",
+            @"selectors": @[
+                @"addNewIconToFirstAvailablePage:animate:",
+                @"addIcon:toFirstAvailablePage:",
+                @"addIcon:",
+                @"insertIcon:",
+                @"placeIcon:",
+                @"addIconToHomeScreen:",
+                @"saveIconState",
+                @"reload"
+            ]
+        },
+
+        @{
+            @"class": @"SBIconController",
+            @"selectors": @[
+                @"addNewIconToFirstAvailablePage:animate:",
+                @"addIcon:toFirstAvailablePage:",
+                @"addIcon:",
+                @"insertIcon:",
+                @"placeIcon:",
+                @"addIconToHomeScreen:",
+                @"saveIconState"
+            ]
+        },
+
+        @{
+            @"class": @"SBRootFolder",
+            @"selectors": @[
+                @"containsIcon:",
+                @"addIcon:",
+                @"insertIcon:",
+                @"removeIcon:",
+                @"addIcon:atIndex:",
+                @"insertIcon:atIndex:"
+            ]
+        }
+    ];
+
+    for (NSDictionary *check in checks) {
+
+        NSString *className =
+            check[@"class"];
+
+        NSArray *selectors =
+            check[@"selectors"];
+
+        Class cls =
+            NSClassFromString(className);
+
+        IARLog(@"");
+        IARLog(@"-- %@ --", className);
+
+        if (!cls) {
+            IARLog(@"Class not found");
+            continue;
+        }
+
+        for (NSString *selectorName in selectors) {
+
+            SEL selector =
+                NSSelectorFromString(selectorName);
+
+            BOOL instance =
+                [cls instancesRespondToSelector:selector];
+
+            BOOL classResponse =
+                [cls respondsToSelector:selector];
+
+            IARLog(@"%@  instance=%d class=%d",
+                   selectorName,
+                   instance,
+                   classResponse);
+        }
+    }
+}
+
+#pragma mark - Main diagnostic
+
+static void IARRunDiagnostics(void) {
 
     @autoreleasepool {
 
-        IARLog(@"========== POLL ==========");
+        IARLog(@"");
+        IARLog(@"");
+        IARLog(@"========================================");
+        IARLog(@"ICON AUTO REFRESH");
+        IARLog(@"FULL RUNTIME DIAGNOSTIC");
+        IARLog(@"========================================");
 
-        NSArray<NSString *> *current =
-            IARGetInstalledBundleIDs();
+        IARLog(@"iOS version: %@",
+               UIDevice.currentDevice.systemVersion);
 
-        if (!current) {
-            IARLog(@"Could not enumerate applications");
-            return;
-        }
+        IARLog(@"Device: %@",
+               UIDevice.currentDevice.model);
 
-        NSSet *currentSet =
-            [NSSet setWithArray:current];
+        /*
+         * Core classes.
+         */
 
-        if (!gKnownBundleIDs) {
+        IARDumpClass(@"SBIconModel");
+        IARDumpClass(@"SBHIconManager");
+        IARDumpClass(@"SBIconController");
+        IARDumpClass(@"SBRootFolder");
+        IARDumpClass(@"SBFolder");
 
-            gKnownBundleIDs =
-                [NSMutableSet setWithSet:currentSet];
+        /*
+         * Live SpringBoard objects.
+         */
 
-            IARLog(@"BASELINE: %lu applications",
-                   (unsigned long)gKnownBundleIDs.count);
+        IARInspectLiveObjects();
 
-            return;
-        }
+        /*
+         * Check known candidates.
+         */
 
-        NSMutableSet *newApplications =
-            [currentSet mutableCopy];
+        IARCheckImportantSelectors();
 
-        [newApplications
-            minusSet:gKnownBundleIDs];
+        /*
+         * Find related runtime classes.
+         */
 
-        if (newApplications.count == 0) {
+        IARFindRelatedClasses();
 
-            IARLog(@"No new applications");
-
-        } else {
-
-            IARLog(@"NEW APPLICATIONS: %lu",
-                   (unsigned long)newApplications.count);
-
-            for (NSString *bundleID
-                 in newApplications) {
-
-                IARLog(@"NEW BUNDLE ID: %@",
-                       bundleID);
-
-                IARProcessNewApplication(bundleID);
-            }
-        }
-
-        gKnownBundleIDs =
-            [NSMutableSet setWithSet:currentSet];
+        IARLog(@"");
+        IARLog(@"========================================");
+        IARLog(@"DIAGNOSTIC COMPLETE");
+        IARLog(@"========================================");
     }
-}
-
-#pragma mark - Start timer
-
-static void IARStartPolling(void) {
-
-    IARLog(@"Creating polling timer");
-
-    if (gPollTimer) {
-        IARLog(@"Polling timer already exists");
-        return;
-    }
-
-    dispatch_queue_t queue =
-        dispatch_get_main_queue();
-
-    gPollTimer =
-        dispatch_source_create(
-            DISPATCH_SOURCE_TYPE_TIMER,
-            0,
-            0,
-            queue);
-
-    if (!gPollTimer) {
-        IARLog(@"FAILED to create timer");
-        return;
-    }
-
-    dispatch_source_set_timer(
-        gPollTimer,
-        dispatch_time(
-            DISPATCH_TIME_NOW,
-            2 * NSEC_PER_SEC),
-        3 * NSEC_PER_SEC,
-        500 * NSEC_PER_MSEC
-    );
-
-    dispatch_source_set_event_handler(
-        gPollTimer,
-        ^{
-            IARLog(@"Timer fired");
-            IARPoll();
-        }
-    );
-
-    dispatch_resume(gPollTimer);
-
-    IARLog(@"Polling timer started successfully");
 }
 
 #pragma mark - Constructor
@@ -566,22 +602,22 @@ static void IARStartPolling(void) {
     @autoreleasepool {
 
         IARLog(@"");
-        IARLog(@"================================");
-        IARLog(@"IconAutoRefresh loaded");
-        IARLog(@"================================");
+        IARLog(@"==============================");
+        IARLog(@"IconAutoRefresh diagnostic loaded");
+        IARLog(@"==============================");
 
         /*
-         * Wait until SpringBoard has finished
-         * initializing its icon model.
+         * Wait until SpringBoard is fully initialized.
          */
 
         dispatch_after(
             dispatch_time(
                 DISPATCH_TIME_NOW,
-                3 * NSEC_PER_SEC),
+                5 * NSEC_PER_SEC
+            ),
             dispatch_get_main_queue(),
             ^{
-                IARStartPolling();
+                IARRunDiagnostics();
             }
         );
     }
