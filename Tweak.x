@@ -1,238 +1,261 @@
-#import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <dispatch/dispatch.h>
 
-static id gWorkspaceObserver = nil;
-static BOOL gObserverStarted = NO;
-static BOOL gRefreshScheduled = NO;
+static NSMutableSet *IARKnownApplications;
+static dispatch_source_t IARTimer;
 
-static NSString *IARBundleIdentifierFromApplication(id application);
-
-static id IARSendObject(id object, SEL selector)
+static id IARSharedIconController(void)
 {
-    if (!object || ![object respondsToSelector:selector])
-        return nil;
-
-    return ((id (*)(id, SEL))objc_msgSend)(
-        object,
-        selector
-    );
-}
-
-static id IARSendObjectWithObject(
-    id object,
-    SEL selector,
-    id argument
-)
-{
-    if (!object || ![object respondsToSelector:selector])
-        return nil;
-
-    return ((id (*)(id, SEL, id))objc_msgSend)(
-        object,
-        selector,
-        argument
-    );
-}
-
-static void IARSendVoid(id object, SEL selector)
-{
-    if (!object || ![object respondsToSelector:selector])
-        return;
-
-    ((void (*)(id, SEL))objc_msgSend)(
-        object,
-        selector
-    );
-}
-
-static id IARIconController(void)
-{
-    Class cls = objc_getClass("SBIconController");
+    Class cls = NSClassFromString(@"SBIconController");
 
     if (!cls)
         return nil;
 
-    SEL selector = sel_registerName("sharedInstance");
+    SEL selector = NSSelectorFromString(@"sharedInstance");
 
     if (![cls respondsToSelector:selector])
         return nil;
 
-    return IARSendObject(
-        cls,
+    return ((id (*)(id, SEL))objc_msgSend)(
+        (id)cls,
         selector
     );
 }
 
-static id IARIconModel(void)
+static id IARIconModel(id controller)
 {
-    id controller = IARIconController();
-
     if (!controller)
         return nil;
 
-    SEL selector = sel_registerName("model");
+    SEL selector = NSSelectorFromString(@"model");
 
-    return IARSendObject(
+    if (![controller respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL))objc_msgSend)(
         controller,
         selector
     );
 }
 
-static BOOL IARIconExistsForBundleIdentifier(
-    NSString *bundleIdentifier
+static id IARExpectedIcon(
+    id model,
+    NSString *bundleID
 )
 {
-    if (!bundleIdentifier.length)
+    if (!model || !bundleID.length)
+        return nil;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"expectedIconForDisplayIdentifier:"
+        );
+
+    if (![model respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        model,
+        selector,
+        bundleID
+    );
+}
+
+static BOOL IARRootContainsIcon(
+    id controller,
+    id icon
+)
+{
+    if (!controller || !icon)
         return NO;
 
-    id model = IARIconModel();
+    SEL rootFolderSelector =
+        NSSelectorFromString(@"rootFolder");
+
+    if (![controller respondsToSelector:
+          rootFolderSelector])
+        return NO;
+
+    id rootFolder =
+        ((id (*)(id, SEL))objc_msgSend)(
+            controller,
+            rootFolderSelector
+        );
+
+    if (!rootFolder)
+        return NO;
+
+    SEL containsSelector =
+        NSSelectorFromString(@"containsIcon:");
+
+    if (![rootFolder respondsToSelector:
+          containsSelector])
+        return NO;
+
+    return ((BOOL (*)(id, SEL, id))objc_msgSend)(
+        rootFolder,
+        containsSelector,
+        icon
+    );
+}
+
+static BOOL IARAddIcon(
+    id controller,
+    id icon
+)
+{
+    if (!controller || !icon)
+        return NO;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"addIconToHomeScreen:"
+        );
+
+    if (![controller respondsToSelector:selector])
+        return NO;
+
+    ((void (*)(id, SEL, id))objc_msgSend)(
+        controller,
+        selector,
+        icon
+    );
+
+    return YES;
+}
+
+static BOOL IARProcessApplication(
+    NSString *bundleID
+)
+{
+    if (!bundleID.length)
+        return NO;
+
+    id controller =
+        IARSharedIconController();
+
+    if (!controller)
+        return NO;
+
+    id model =
+        IARIconModel(controller);
 
     if (!model)
         return NO;
 
-    SEL selector =
-        sel_registerName(
-            "applicationIconForBundleIdentifier:"
+    id icon =
+        IARExpectedIcon(
+            model,
+            bundleID
         );
 
-    id icon = IARSendObjectWithObject(
-        model,
-        selector,
-        bundleIdentifier
-    );
+    if (!icon)
+        return NO;
 
-    return icon != nil;
-}
-
-static void IARReloadIcons(void)
-{
-    dispatch_async(
-        dispatch_get_main_queue(),
-        ^{
-            id model = IARIconModel();
-
-            if (!model)
-                return;
-
-            SEL selector =
-                sel_registerName("reloadIcons");
-
-            if ([model respondsToSelector:selector])
-            {
-                IARSendVoid(
-                    model,
-                    selector
-                );
-            }
-        }
-    );
-}
-
-static void IARRefreshForBundleIdentifier(
-    NSString *bundleIdentifier
-)
-{
-    if (!bundleIdentifier.length)
-        return;
-
-    if (IARIconExistsForBundleIdentifier(
-            bundleIdentifier))
+    if (IARRootContainsIcon(
+            controller,
+            icon
+        ))
     {
-        return;
+        return YES;
     }
 
-    IARReloadIcons();
+    return IARAddIcon(
+        controller,
+        icon
+    );
 }
 
-static void IARScheduleRefresh(
-    NSString *bundleIdentifier
+static void IARRetryApplication(
+    NSString *bundleID,
+    NSUInteger attempt
 )
 {
-    if (!bundleIdentifier.length)
+    if (!bundleID.length)
         return;
 
-    if (gRefreshScheduled)
+    if (IARProcessApplication(bundleID))
         return;
 
-    gRefreshScheduled = YES;
+    if (attempt >= 6)
+        return;
 
-    NSString *identifier =
-        [bundleIdentifier copy];
+    static const double delays[] = {
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        3.0,
+        4.0
+    };
+
+    double delay = delays[attempt];
 
     dispatch_after(
         dispatch_time(
             DISPATCH_TIME_NOW,
-            (int64_t)(0.6 * NSEC_PER_SEC)
+            (int64_t)(delay * NSEC_PER_SEC)
         ),
         dispatch_get_main_queue(),
         ^{
-            IARRefreshForBundleIdentifier(
-                identifier
+            IARRetryApplication(
+                bundleID,
+                attempt + 1
             );
-
-            gRefreshScheduled = NO;
         }
     );
 }
 
-@interface IARWorkspaceObserver : NSObject
-@end
-
-@implementation IARWorkspaceObserver
-
-- (void)applicationInstalled:(id)application
+static NSArray *IARInstalledApplications(void)
 {
-    NSString *bundleIdentifier =
-        IARBundleIdentifierFromApplication(
-            application
+    Class workspaceClass =
+        NSClassFromString(
+            @"LSApplicationWorkspace"
         );
 
-    if (bundleIdentifier.length)
-    {
-        IARScheduleRefresh(
-            bundleIdentifier
+    if (!workspaceClass)
+        return @[];
+
+    SEL defaultSelector =
+        NSSelectorFromString(
+            @"defaultWorkspace"
         );
-    }
+
+    if (![workspaceClass respondsToSelector:
+          defaultSelector])
+        return @[];
+
+    id workspace =
+        ((id (*)(id, SEL))objc_msgSend)(
+            (id)workspaceClass,
+            defaultSelector
+        );
+
+    if (!workspace)
+        return @[];
+
+    SEL allAppsSelector =
+        NSSelectorFromString(
+            @"allApplications"
+        );
+
+    if (![workspace respondsToSelector:
+          allAppsSelector])
+        return @[];
+
+    NSArray *apps =
+        ((NSArray *(*)(id, SEL))objc_msgSend)(
+            workspace,
+            allAppsSelector
+        );
+
+    return apps ?: @[];
 }
 
-- (void)applicationsDidInstall:(NSArray *)applications
-{
-    for (id application in applications)
-    {
-        NSString *bundleIdentifier =
-            IARBundleIdentifierFromApplication(
-                application
-            );
-
-        if (bundleIdentifier.length)
-        {
-            IARScheduleRefresh(
-                bundleIdentifier
-            );
-        }
-    }
-}
-
-- (void)applicationWasInstalled:(id)application
-{
-    NSString *bundleIdentifier =
-        IARBundleIdentifierFromApplication(
-            application
-        );
-
-    if (bundleIdentifier.length)
-    {
-        IARScheduleRefresh(
-            bundleIdentifier
-        );
-    }
-}
-
-@end
-
-static NSString *IARBundleIdentifierFromApplication(
+static NSString *IARBundleIdentifier(
     id application
 )
 {
@@ -240,116 +263,126 @@ static NSString *IARBundleIdentifierFromApplication(
         return nil;
 
     SEL selector =
-        sel_registerName("bundleIdentifier");
-
-    id value =
-        IARSendObject(
-            application,
-            selector
+        NSSelectorFromString(
+            @"applicationIdentifier"
         );
 
-    if ([value isKindOfClass:[NSString class]])
-        return value;
+    if (![application respondsToSelector:
+          selector])
+        return nil;
 
-    return nil;
-}
-
-static void IARStartObserver(void)
-{
-    if (gObserverStarted)
-        return;
-
-    Class workspaceClass =
-        objc_getClass("LSApplicationWorkspace");
-
-    if (!workspaceClass)
-        return;
-
-    SEL defaultWorkspaceSEL =
-        sel_registerName("defaultWorkspace");
-
-    if (![workspaceClass respondsToSelector:
-          defaultWorkspaceSEL])
-    {
-        return;
-    }
-
-    id workspace =
-        IARSendObject(
-            workspaceClass,
-            defaultWorkspaceSEL
-        );
-
-    if (!workspace)
-        return;
-
-    SEL addObserverSEL =
-        sel_registerName("addObserver:");
-
-    if (![workspace respondsToSelector:
-          addObserverSEL])
-    {
-        return;
-    }
-
-    IARWorkspaceObserver *observer =
-        [IARWorkspaceObserver new];
-
-    gWorkspaceObserver = observer;
-
-    ((void (*)(id, SEL, id))objc_msgSend)(
-        workspace,
-        addObserverSEL,
-        observer
-    );
-
-    gObserverStarted = YES;
-}
-
-%hook SBIconController
-
-- (void)applicationDidFinishLaunching:(id)application
-{
-    %orig;
-
-    dispatch_after(
-        dispatch_time(
-            DISPATCH_TIME_NOW,
-            (int64_t)(2.0 * NSEC_PER_SEC)
-        ),
-        dispatch_get_main_queue(),
-        ^{
-            IARStartObserver();
-        }
+    return ((NSString *(*)(id, SEL))objc_msgSend)(
+        application,
+        selector
     );
 }
 
-%end
-
-%ctor
+static void IARPoll(void)
 {
-    @autoreleasepool
-    {
-        NSString *bundleIdentifier =
-            [[NSBundle mainBundle]
-                bundleIdentifier];
+    NSArray *applications =
+        IARInstalledApplications();
 
-        if (![bundleIdentifier
-              isEqualToString:
-              @"com.apple.springboard"])
-        {
-            return;
-        }
+    NSMutableSet *current =
+        [NSMutableSet
+            setWithCapacity:applications.count];
+
+    for (id application in applications)
+    {
+        NSString *bundleID =
+            IARBundleIdentifier(
+                application
+            );
+
+        if (bundleID.length)
+            [current addObject:bundleID];
+    }
+
+    if (!IARKnownApplications)
+    {
+        IARKnownApplications =
+            [current mutableCopy];
+
+        return;
+    }
+
+    NSMutableSet *newApplications =
+        [current mutableCopy];
+
+    [newApplications
+        minusSet:IARKnownApplications];
+
+    for (NSString *bundleID in newApplications)
+    {
+        NSString *identifier =
+            [bundleID copy];
 
         dispatch_after(
             dispatch_time(
                 DISPATCH_TIME_NOW,
-                (int64_t)(4.0 * NSEC_PER_SEC)
+                (int64_t)(1.0 * NSEC_PER_SEC)
             ),
             dispatch_get_main_queue(),
             ^{
-                IARStartObserver();
+                IARRetryApplication(
+                    identifier,
+                    0
+                );
             }
         );
     }
+
+    IARKnownApplications =
+        [current mutableCopy];
+}
+
+static void IARStart(void)
+{
+    dispatch_async(
+        dispatch_get_main_queue(),
+        ^{
+            IARPoll();
+
+            if (IARTimer)
+                return;
+
+            IARTimer =
+                dispatch_source_create(
+                    DISPATCH_SOURCE_TYPE_TIMER,
+                    0,
+                    0,
+                    dispatch_get_main_queue()
+                );
+
+            if (!IARTimer)
+                return;
+
+            dispatch_source_set_timer(
+                IARTimer,
+                dispatch_time(
+                    DISPATCH_TIME_NOW,
+                    (int64_t)(3.0 * NSEC_PER_SEC)
+                ),
+                (uint64_t)(3.0 * NSEC_PER_SEC),
+                (uint64_t)(0.5 * NSEC_PER_SEC)
+            );
+
+            dispatch_source_set_event_handler(
+                IARTimer,
+                ^{
+                    IARPoll();
+                }
+            );
+
+            dispatch_resume(IARTimer);
+        }
+    );
+}
+
+%ctor
+{
+    NSString *processName =
+        [NSProcessInfo processInfo].processName;
+
+    if ([processName isEqualToString:@"SpringBoard"])
+        IARStart();
 }
