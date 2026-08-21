@@ -3,10 +3,12 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
-static NSUInteger gPreviousApplicationCount = 0;
-static dispatch_source_t gTimer = nil;
+static NSUInteger IARPreviousApplicationCount = 0;
+static dispatch_source_t IARTimer = nil;
+static BOOL IARRefreshInProgress = NO;
+static BOOL IARRetryScheduled = NO;
 
-static NSUInteger IARApplicationCount(void)
+static NSUInteger IARGetApplicationCount(void)
 {
     Class workspaceClass = objc_getClass("LSApplicationWorkspace");
 
@@ -40,10 +42,13 @@ static NSUInteger IARApplicationCount(void)
             allApplicationsSEL
         );
 
+    if (![applications isKindOfClass:[NSArray class]])
+        return 0;
+
     return applications.count;
 }
 
-static id IARIconController(void)
+static id IARGetIconController(void)
 {
     Class controllerClass =
         objc_getClass("SBIconController");
@@ -64,9 +69,10 @@ static id IARIconController(void)
         );
 }
 
-static id IARIconModel(void)
+static id IARGetIconModel(void)
 {
-    id controller = IARIconController();
+    id controller =
+        IARGetIconController();
 
     if (!controller)
         return nil;
@@ -84,170 +90,193 @@ static id IARIconModel(void)
         );
 }
 
-static void IARInvokeIfAvailable(
+static BOOL IARCallVoidSelector(
     id object,
-    const char *selectorName
+    SEL selector
 )
 {
     if (!object)
-        return;
-
-    SEL selector =
-        sel_registerName(selectorName);
+        return NO;
 
     if (![object respondsToSelector:selector])
-        return;
+        return NO;
 
     ((void (*)(id, SEL))objc_msgSend)(
         object,
         selector
     );
+
+    return YES;
 }
 
-static void IARRefresh(void)
+static BOOL IARRefreshIconModel(void)
 {
+    id model =
+        IARGetIconModel();
+
+    if (!model)
+        return NO;
+
+    BOOL changed = NO;
+
+    SEL reloadSEL =
+        sel_registerName("reload");
+
+    if (IARCallVoidSelector(model, reloadSEL))
+        changed = YES;
+
+    SEL reloadIconsSEL =
+        sel_registerName("reloadIcons");
+
+    if (IARCallVoidSelector(model, reloadIconsSEL))
+        changed = YES;
+
+    SEL updateIconStateSEL =
+        sel_registerName("updateIconState");
+
+    if (IARCallVoidSelector(model, updateIconStateSEL))
+        changed = YES;
+
+    SEL saveIconStateSEL =
+        sel_registerName("saveIconState");
+
+    if (IARCallVoidSelector(model, saveIconStateSEL))
+        changed = YES;
+
+    return changed;
+}
+
+static void IARPerformRefresh(void)
+{
+    if (IARRefreshInProgress)
+        return;
+
+    IARRefreshInProgress = YES;
+
     dispatch_async(
         dispatch_get_main_queue(),
         ^{
-            id model = IARIconModel();
+            IARRefreshIconModel();
 
-            if (!model)
-                return;
-
-            IARInvokeIfAvailable(
-                model,
-                "reload"
-            );
-
-            IARInvokeIfAvailable(
-                model,
-                "reloadIcons"
-            );
-
-            IARInvokeIfAvailable(
-                model,
-                "updateIconState"
-            );
-
-            IARInvokeIfAvailable(
-                model,
-                "saveIconState"
+            dispatch_after(
+                dispatch_time(
+                    DISPATCH_TIME_NOW,
+                    (int64_t)(
+                        1.0 *
+                        NSEC_PER_SEC
+                    )
+                ),
+                dispatch_get_main_queue(),
+                ^{
+                    IARRefreshInProgress = NO;
+                }
             );
         }
     );
 }
 
-static void IARCheckApplications(void)
+static void IARScheduleRefresh(void)
+{
+    if (IARRetryScheduled)
+        return;
+
+    IARRetryScheduled = YES;
+
+    dispatch_after(
+        dispatch_time(
+            DISPATCH_TIME_NOW,
+            (int64_t)(
+                1.5 *
+                NSEC_PER_SEC
+            )
+        ),
+        dispatch_get_main_queue(),
+        ^{
+            IARRetryScheduled = NO;
+
+            IARPerformRefresh();
+        }
+    );
+}
+
+static void IARCheckForApplicationChanges(void)
 {
     NSUInteger currentCount =
-        IARApplicationCount();
+        IARGetApplicationCount();
 
     if (currentCount == 0)
         return;
 
-    if (gPreviousApplicationCount == 0) {
-        gPreviousApplicationCount =
+    if (IARPreviousApplicationCount == 0) {
+        IARPreviousApplicationCount =
             currentCount;
 
         return;
     }
 
-    if (currentCount !=
-        gPreviousApplicationCount) {
-
-        gPreviousApplicationCount =
-            currentCount;
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(
-                    1.0 *
-                    NSEC_PER_SEC
-                )
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                IARRefresh();
-            }
-        );
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(
-                    3.0 *
-                    NSEC_PER_SEC
-                )
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                IARRefresh();
-            }
-        );
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(
-                    6.0 *
-                    NSEC_PER_SEC
-                )
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                IARRefresh();
-            }
-        );
+    if (currentCount ==
+        IARPreviousApplicationCount) {
+        return;
     }
+
+    IARPreviousApplicationCount =
+        currentCount;
+
+    IARScheduleRefresh();
 }
 
-static void IARStartTimer(void)
+static void IARStartWatcher(void)
 {
-    if (gTimer)
+    if (IARTimer)
         return;
 
-    gPreviousApplicationCount =
-        IARApplicationCount();
+    IARPreviousApplicationCount =
+        IARGetApplicationCount();
 
-    gTimer =
+    if (IARPreviousApplicationCount == 0)
+        IARPreviousApplicationCount = 0;
+
+    IARTimer =
         dispatch_source_create(
             DISPATCH_SOURCE_TYPE_TIMER,
             0,
             0,
-            dispatch_get_main_queue()
+            dispatch_get_global_queue(
+                QOS_CLASS_UTILITY,
+                0
+            )
         );
 
-    if (!gTimer)
+    if (!IARTimer)
         return;
 
     dispatch_source_set_timer(
-        gTimer,
+        IARTimer,
         dispatch_time(
             DISPATCH_TIME_NOW,
             (int64_t)(
-                3.0 *
+                5.0 *
                 NSEC_PER_SEC
             )
         ),
         (uint64_t)(
-            3.0 *
+            5.0 *
             NSEC_PER_SEC
         ),
         (uint64_t)(
-            0.5 *
+            1.0 *
             NSEC_PER_SEC
         )
     );
 
     dispatch_source_set_event_handler(
-        gTimer,
+        IARTimer,
         ^{
-            IARCheckApplications();
+            IARCheckForApplicationChanges();
         }
     );
 
-    dispatch_resume(gTimer);
+    dispatch_resume(IARTimer);
 }
 
 %hook SBIconController
@@ -260,13 +289,13 @@ static void IARStartTimer(void)
         dispatch_time(
             DISPATCH_TIME_NOW,
             (int64_t)(
-                2.0 *
+                3.0 *
                 NSEC_PER_SEC
             )
         ),
         dispatch_get_main_queue(),
         ^{
-            IARStartTimer();
+            IARStartWatcher();
         }
     );
 }
@@ -294,7 +323,7 @@ static void IARStartTimer(void)
             ),
             dispatch_get_main_queue(),
             ^{
-                IARStartTimer();
+                IARStartWatcher();
             }
         );
     }
