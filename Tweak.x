@@ -1,273 +1,278 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
 
-static NSString *IARLogPath(void)
+static id IARSharedIconController(void)
 {
-    return @"/var/mobile/IconAutoRefresh-Debug.log";
-}
+    Class cls = NSClassFromString(@"SBIconController");
 
-static void IARLog(NSString *format, ...)
-{
-    va_list args;
-    va_start(args, format);
-
-    NSString *message =
-        [[NSString alloc]
-            initWithFormat:format
-            arguments:args];
-
-    va_end(args);
-
-    NSString *line =
-        [NSString stringWithFormat:
-            @"[%@] %@\n",
-            [NSDate date],
-            message];
-
-    NSFileHandle *file =
-        [NSFileHandle
-            fileHandleForWritingAtPath:IARLogPath()];
-
-    if (!file)
-    {
-        [[NSFileManager defaultManager]
-            createFileAtPath:IARLogPath()
-            contents:nil
-            attributes:nil];
-
-        file =
-            [NSFileHandle
-                fileHandleForWritingAtPath:IARLogPath()];
-    }
-
-    if (!file)
-        return;
-
-    [file seekToEndOfFile];
-
-    [file writeData:
-        [line dataUsingEncoding:NSUTF8StringEncoding]];
-
-    [file closeFile];
-}
-
-static void IARDumpClass(Class cls)
-{
     if (!cls)
-        return;
+        return nil;
 
-    IARLog(
-        @"========================================"
+    SEL selector =
+        NSSelectorFromString(@"sharedInstance");
+
+    if (![cls respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL))objc_msgSend)(
+        (id)cls,
+        selector
     );
-
-    IARLog(
-        @"CLASS: %@",
-        NSStringFromClass(cls)
-    );
-
-    unsigned int count = 0;
-
-    Method *methods =
-        class_copyMethodList(
-            cls,
-            &count
-        );
-
-    IARLog(
-        @"INSTANCE METHODS: %u",
-        count
-    );
-
-    for (unsigned int i = 0; i < count; i++)
-    {
-        Method method = methods[i];
-
-        SEL selector =
-            method_getName(method);
-
-        const char *types =
-            method_getTypeEncoding(method);
-
-        IARLog(
-            @"INSTANCE: %@ | %s",
-            NSStringFromSelector(selector),
-            types ? types : "?"
-        );
-    }
-
-    free(methods);
-
-    count = 0;
-
-    Method *classMethods =
-        class_copyMethodList(
-            object_getClass(cls),
-            &count
-        );
-
-    IARLog(
-        @"CLASS METHODS: %u",
-        count
-    );
-
-    for (unsigned int i = 0; i < count; i++)
-    {
-        Method method = classMethods[i];
-
-        SEL selector =
-            method_getName(method);
-
-        const char *types =
-            method_getTypeEncoding(method);
-
-        IARLog(
-            @"CLASS: %@ | %s",
-            NSStringFromSelector(selector),
-            types ? types : "?"
-        );
-    }
-
-    free(classMethods);
-
-    Class superclass =
-        class_getSuperclass(cls);
-
-    if (superclass)
-    {
-        IARLog(
-            @"SUPERCLASS: %@",
-            NSStringFromClass(superclass)
-        );
-
-        IARDumpClass(superclass);
-    }
 }
 
-static void IARDumpInterestingSelectors(Class cls)
+static id IARIconModel(id controller)
 {
-    if (!cls)
-        return;
+    if (!controller)
+        return nil;
 
-    unsigned int count = 0;
+    SEL selector =
+        NSSelectorFromString(@"model");
 
-    Method *methods =
-        class_copyMethodList(
-            cls,
-            &count
-        );
+    if (![controller respondsToSelector:selector])
+        return nil;
 
-    for (unsigned int i = 0; i < count; i++)
-    {
-        SEL selector =
-            method_getName(methods[i]);
-
-        NSString *name =
-            NSStringFromSelector(selector);
-
-        NSArray *keywords = @[
-            @"reload",
-            @"update",
-            @"layout",
-            @"icon",
-            @"application",
-            @"folder",
-            @"add",
-            @"remove",
-            @"arrange",
-            @"edit",
-            @"model",
-            @"refresh",
-            @"rebuild",
-            @"display",
-            @"homeScreen",
-            @"homescreen"
-        ];
-
-        for (NSString *keyword in keywords)
-        {
-            if ([name rangeOfString:
-                    keyword
-                    options:NSCaseInsensitiveSearch].location
-                != NSNotFound)
-            {
-                const char *types =
-                    method_getTypeEncoding(methods[i]);
-
-                IARLog(
-                    @"INTERESTING %@ -> %@ | %s",
-                    NSStringFromClass(cls),
-                    name,
-                    types ? types : "?"
-                );
-
-                break;
-            }
-        }
-    }
-
-    free(methods);
-
-    Class superclass =
-        class_getSuperclass(cls);
-
-    if (superclass)
-        IARDumpInterestingSelectors(superclass);
+    return ((id (*)(id, SEL))objc_msgSend)(
+        controller,
+        selector
+    );
 }
 
-static void IARStartDiagnostics(void)
+static id IARApplicationIcon(
+    id model,
+    NSString *bundleID
+)
 {
-    IARLog(@"========================================");
-    IARLog(@"IconAutoRefresh METHOD DUMP");
-    IARLog(
-        @"iOS: %@",
-        UIDevice.currentDevice.systemVersion
+    if (!model || !bundleID.length)
+        return nil;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"applicationIconForBundleIdentifier:"
+        );
+
+    if (![model respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        model,
+        selector,
+        bundleID
     );
-    IARLog(@"========================================");
+}
 
-    NSArray *classNames = @[
-        @"SBIconController",
-        @"SBIconModel",
-        @"SBHIconManager",
-        @"SBRootFolder",
-        @"SBFolder"
-    ];
+static id IARExpectedIcon(
+    id model,
+    NSString *bundleID
+)
+{
+    if (!model || !bundleID.length)
+        return nil;
 
-    for (NSString *className in classNames)
+    SEL selector =
+        NSSelectorFromString(
+            @"expectedIconForDisplayIdentifier:"
+        );
+
+    if (![model respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        model,
+        selector,
+        bundleID
+    );
+}
+
+static id IARFindIcon(
+    id model,
+    NSString *bundleID
+)
+{
+    id icon =
+        IARApplicationIcon(
+            model,
+            bundleID
+        );
+
+    if (icon)
+        return icon;
+
+    return IARExpectedIcon(
+        model,
+        bundleID
+    );
+}
+
+static BOOL IARRootContainsIcon(
+    id controller,
+    id icon
+)
+{
+    if (!controller || !icon)
+        return NO;
+
+    SEL rootFolderSelector =
+        NSSelectorFromString(@"rootFolder");
+
+    if (![controller respondsToSelector:
+          rootFolderSelector])
+        return NO;
+
+    id rootFolder =
+        ((id (*)(id, SEL))objc_msgSend)(
+            controller,
+            rootFolderSelector
+        );
+
+    if (!rootFolder)
+        return NO;
+
+    SEL containsSelector =
+        NSSelectorFromString(@"containsIcon:");
+
+    if (![rootFolder respondsToSelector:
+          containsSelector])
+        return NO;
+
+    return ((BOOL (*)(id, SEL, id))objc_msgSend)(
+        rootFolder,
+        containsSelector,
+        icon
+    );
+}
+
+static BOOL IARAddIcon(
+    id controller,
+    id icon
+)
+{
+    if (!controller || !icon)
+        return NO;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"addIconToHomeScreen:"
+        );
+
+    if (![controller respondsToSelector:selector])
+        return NO;
+
+    ((void (*)(id, SEL, id))objc_msgSend)(
+        controller,
+        selector,
+        icon
+    );
+
+    return YES;
+}
+
+static void IARProcessApplication(
+    NSString *bundleID
+)
+{
+    if (!bundleID.length)
+        return;
+
+    id controller =
+        IARSharedIconController();
+
+    if (!controller)
+        return;
+
+    id model =
+        IARIconModel(controller);
+
+    if (!model)
+        return;
+
+    id icon =
+        IARFindIcon(
+            model,
+            bundleID
+        );
+
+    if (!icon)
+        return;
+
+    if (IARRootContainsIcon(
+            controller,
+            icon
+        ))
+        return;
+
+    IARAddIcon(
+        controller,
+        icon
+    );
+}
+
+static NSString *IARBundleIdentifier(
+    id application
+)
+{
+    if (!application)
+        return nil;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"applicationIdentifier"
+        );
+
+    if (![application respondsToSelector:selector])
+        return nil;
+
+    return ((NSString *(*)(id, SEL))objc_msgSend)(
+        application,
+        selector
+    );
+}
+
+static void IARProcessAddedApplications(
+    id added
+)
+{
+    if (!added)
+        return;
+
+    for (id application in added)
     {
-        Class cls =
-            NSClassFromString(className);
-
-        if (!cls)
-        {
-            IARLog(
-                @"CLASS NOT FOUND: %@",
-                className
+        NSString *bundleID =
+            IARBundleIdentifier(
+                application
             );
 
+        if (!bundleID.length)
             continue;
-        }
 
-        IARLog(
-            @"FOUND CLASS: %@",
-            className
+        dispatch_async(
+            dispatch_get_main_queue(),
+            ^{
+                IARProcessApplication(
+                    bundleID
+                );
+            }
         );
-
-        IARDumpClass(cls);
-
-        IARLog(
-            @"INTERESTING METHODS FOR %@",
-            className
-        );
-
-        IARDumpInterestingSelectors(cls);
     }
-
-    IARLog(@"========================================");
-    IARLog(@"METHOD DUMP COMPLETE");
-    IARLog(@"========================================");
 }
+
+%hook SBIconController
+
+- (void)_mutateIconListsForInstalledAppsDidChangeWithController:(id)controller
+                                                          added:(id)added
+                                                       modified:(id)modified
+                                                        removed:(id)removed
+{
+    %orig;
+
+    IARProcessAddedApplications(
+        added
+    );
+}
+
+%end
 
 %ctor
 {
@@ -278,19 +283,6 @@ static void IARStartDiagnostics(void)
 
         if (![processName
               isEqualToString:@"SpringBoard"])
-        {
             return;
-        }
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(3.0 * NSEC_PER_SEC)
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                IARStartDiagnostics();
-            }
-        );
     }
 }
