@@ -14,7 +14,8 @@ static id IARSharedIconController(void)
     if (!cls)
         return nil;
 
-    SEL selector = NSSelectorFromString(@"sharedInstance");
+    SEL selector =
+        NSSelectorFromString(@"sharedInstance");
 
     if (![cls respondsToSelector:selector])
         return nil;
@@ -30,7 +31,8 @@ static id IARIconModel(id controller)
     if (!controller)
         return nil;
 
-    SEL selector = NSSelectorFromString(@"model");
+    SEL selector =
+        NSSelectorFromString(@"model");
 
     if (![controller respondsToSelector:selector])
         return nil;
@@ -38,6 +40,29 @@ static id IARIconModel(id controller)
     return ((id (*)(id, SEL))objc_msgSend)(
         controller,
         selector
+    );
+}
+
+static id IARApplicationIcon(
+    id model,
+    NSString *bundleID
+)
+{
+    if (!model || !bundleID.length)
+        return nil;
+
+    SEL selector =
+        NSSelectorFromString(
+            @"applicationIconForBundleIdentifier:"
+        );
+
+    if (![model respondsToSelector:selector])
+        return nil;
+
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        model,
+        selector,
+        bundleID
     );
 }
 
@@ -60,6 +85,26 @@ static id IARExpectedIcon(
     return ((id (*)(id, SEL, id))objc_msgSend)(
         model,
         selector,
+        bundleID
+    );
+}
+
+static id IARFindIcon(
+    id model,
+    NSString *bundleID
+)
+{
+    id icon =
+        IARApplicationIcon(
+            model,
+            bundleID
+        );
+
+    if (icon)
+        return icon;
+
+    return IARExpectedIcon(
+        model,
         bundleID
     );
 }
@@ -147,7 +192,7 @@ static BOOL IARProcessApplication(
         return NO;
 
     id icon =
-        IARExpectedIcon(
+        IARFindIcon(
             model,
             bundleID
         );
@@ -180,16 +225,20 @@ static void IARRetryApplication(
     if (IARProcessApplication(bundleID))
         return;
 
-    if (attempt >= 6)
+    if (attempt >= 10)
         return;
 
     static const double delays[] = {
         0.5,
         1.0,
+        1.0,
         1.5,
         2.0,
+        2.0,
         3.0,
-        4.0
+        3.0,
+        4.0,
+        5.0
     };
 
     double delay = delays[attempt];
@@ -267,8 +316,7 @@ static NSString *IARBundleIdentifier(
             @"applicationIdentifier"
         );
 
-    if (![application respondsToSelector:
-          selector])
+    if (![application respondsToSelector:selector])
         return nil;
 
     return ((NSString *(*)(id, SEL))objc_msgSend)(
