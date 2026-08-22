@@ -113,9 +113,14 @@ static void IARForceLayout(id controller)
     }
 }
 
-static NSString *IARBundleIdentifier(id application)
+static NSString *IARBundleIdentifierFromApplication(id application)
 {
     if (!application) return nil;
+    
+    if ([application isKindOfClass:[NSString class]]) {
+        return (NSString *)application;
+    }
+    
     SEL selector1 = NSSelectorFromString(@"applicationIdentifier");
     if ([application respondsToSelector:selector1]) {
         return ((NSString *(*)(id, SEL))objc_msgSend)(application, selector1);
@@ -194,7 +199,7 @@ static void IARProcessAddedApplications(id added)
     IARLog(@"Processing added applications: %@", added);
     
     for (id application in added) {
-        NSString *bundleID = IARBundleIdentifier(application);
+        NSString *bundleID = IARBundleIdentifierFromApplication(application);
         if (!bundleID.length) {
             IARLog(@"WARNING: Cannot get bundle ID for application: %@", application);
             continue;
