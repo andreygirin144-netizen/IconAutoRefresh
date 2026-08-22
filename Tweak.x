@@ -1,7 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import <dispatch/dispatch.h>
 
 static NSString *IARLogPath(void)
@@ -54,43 +53,99 @@ static void IARLog(NSString *format, ...)
     [file closeFile];
 }
 
-static BOOL IARShouldLogSelector(SEL selector)
+static void IARDumpClass(Class cls)
 {
-    NSString *name =
-        NSStringFromSelector(selector);
+    if (!cls)
+        return;
 
-    NSArray *keywords = @[
-        @"reload",
-        @"update",
-        @"layout",
-        @"icon",
-        @"application",
-        @"model",
-        @"folder",
-        @"add",
-        @"remove",
-        @"rebuild",
-        @"refresh",
-        @"edit",
-        @"arrange",
-        @"save"
-    ];
+    IARLog(
+        @"========================================"
+    );
 
-    for (NSString *keyword in keywords)
+    IARLog(
+        @"CLASS: %@",
+        NSStringFromClass(cls)
+    );
+
+    unsigned int count = 0;
+
+    Method *methods =
+        class_copyMethodList(
+            cls,
+            &count
+        );
+
+    IARLog(
+        @"INSTANCE METHODS: %u",
+        count
+    );
+
+    for (unsigned int i = 0; i < count; i++)
     {
-        if ([name rangeOfString:
-                keyword
-                options:NSCaseInsensitiveSearch].location
-            != NSNotFound)
-        {
-            return YES;
-        }
+        Method method = methods[i];
+
+        SEL selector =
+            method_getName(method);
+
+        const char *types =
+            method_getTypeEncoding(method);
+
+        IARLog(
+            @"INSTANCE: %@ | %s",
+            NSStringFromSelector(selector),
+            types ? types : "?"
+        );
     }
 
-    return NO;
+    free(methods);
+
+    count = 0;
+
+    Method *classMethods =
+        class_copyMethodList(
+            object_getClass(cls),
+            &count
+        );
+
+    IARLog(
+        @"CLASS METHODS: %u",
+        count
+    );
+
+    for (unsigned int i = 0; i < count; i++)
+    {
+        Method method = classMethods[i];
+
+        SEL selector =
+            method_getName(method);
+
+        const char *types =
+            method_getTypeEncoding(method);
+
+        IARLog(
+            @"CLASS: %@ | %s",
+            NSStringFromSelector(selector),
+            types ? types : "?"
+        );
+    }
+
+    free(classMethods);
+
+    Class superclass =
+        class_getSuperclass(cls);
+
+    if (superclass)
+    {
+        IARLog(
+            @"SUPERCLASS: %@",
+            NSStringFromClass(superclass)
+        );
+
+        IARDumpClass(superclass);
+    }
 }
 
-static void IARInstallHooksForClass(Class cls)
+static void IARDumpInterestingSelectors(Class cls)
 {
     if (!cls)
         return;
@@ -103,67 +158,74 @@ static void IARInstallHooksForClass(Class cls)
             &count
         );
 
-    if (!methods)
-        return;
-
     for (unsigned int i = 0; i < count; i++)
     {
-        Method method = methods[i];
-
         SEL selector =
-            method_getName(method);
+            method_getName(methods[i]);
 
-        if (!IARShouldLogSelector(selector))
-            continue;
-
-        const char *types =
-            method_getTypeEncoding(method);
-
-        if (!types)
-            continue;
-
-        if (types[0] != 'v')
-            continue;
-
-        if (strstr(types, "@:") == NULL)
-            continue;
-
-        IMP originalIMP =
-            method_getImplementation(method);
-
-        NSString *selectorName =
+        NSString *name =
             NSStringFromSelector(selector);
 
-        IMP blockIMP =
-            imp_implementationWithBlock(
-                ^(id object)
-                {
-                    IARLog(
-                        @"CALL %@ [%@]",
-                        selectorName,
-                        NSStringFromClass(
-                            object_getClass(object)
-                        )
-                    );
+        NSArray *keywords = @[
+            @"reload",
+            @"update",
+            @"layout",
+            @"icon",
+            @"application",
+            @"folder",
+            @"add",
+            @"remove",
+            @"arrange",
+            @"edit",
+            @"model",
+            @"refresh",
+            @"rebuild",
+            @"display",
+            @"homeScreen",
+            @"homescreen"
+        ];
 
-                    ((void (*)(id, SEL))originalIMP)(
-                        object,
-                        selector
-                    );
-                }
-            );
+        for (NSString *keyword in keywords)
+        {
+            if ([name rangeOfString:
+                    keyword
+                    options:NSCaseInsensitiveSearch].location
+                != NSNotFound)
+            {
+                const char *types =
+                    method_getTypeEncoding(methods[i]);
 
-        method_setImplementation(
-            method,
-            blockIMP
-        );
+                IARLog(
+                    @"INTERESTING %@ -> %@ | %s",
+                    NSStringFromClass(cls),
+                    name,
+                    types ? types : "?"
+                );
+
+                break;
+            }
+        }
     }
 
     free(methods);
+
+    Class superclass =
+        class_getSuperclass(cls);
+
+    if (superclass)
+        IARDumpInterestingSelectors(superclass);
 }
 
-static void IARInstallHooks(void)
+static void IARStartDiagnostics(void)
 {
+    IARLog(@"========================================");
+    IARLog(@"IconAutoRefresh METHOD DUMP");
+    IARLog(
+        @"iOS: %@",
+        UIDevice.currentDevice.systemVersion
+    );
+    IARLog(@"========================================");
+
     NSArray *classNames = @[
         @"SBIconController",
         @"SBIconModel",
@@ -188,14 +250,23 @@ static void IARInstallHooks(void)
         }
 
         IARLog(
-            @"HOOKING CLASS: %@",
+            @"FOUND CLASS: %@",
             className
         );
 
-        IARInstallHooksForClass(cls);
+        IARDumpClass(cls);
+
+        IARLog(
+            @"INTERESTING METHODS FOR %@",
+            className
+        );
+
+        IARDumpInterestingSelectors(cls);
     }
 
-    IARLog(@"HOOK INSTALLATION COMPLETE");
+    IARLog(@"========================================");
+    IARLog(@"METHOD DUMP COMPLETE");
+    IARLog(@"========================================");
 }
 
 %ctor
@@ -214,16 +285,11 @@ static void IARInstallHooks(void)
         dispatch_after(
             dispatch_time(
                 DISPATCH_TIME_NOW,
-                (int64_t)(5.0 * NSEC_PER_SEC)
+                (int64_t)(3.0 * NSEC_PER_SEC)
             ),
             dispatch_get_main_queue(),
             ^{
-                IARLog(@"================================");
-                IARLog(@"IconAutoRefresh DEBUG STARTED");
-                IARLog(@"iOS: %@", UIDevice.currentDevice.systemVersion);
-                IARLog(@"================================");
-
-                IARInstallHooks();
+                IARStartDiagnostics();
             }
         );
     }
