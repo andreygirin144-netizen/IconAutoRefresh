@@ -1,436 +1,230 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <objc/message.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dispatch/dispatch.h>
 
-static NSMutableSet *IARKnownApplications;
-static dispatch_source_t IARTimer;
-
-static id IARSharedIconController(void)
+static NSString *IARLogPath(void)
 {
-    Class cls = NSClassFromString(@"SBIconController");
-
-    if (!cls)
-        return nil;
-
-    SEL selector =
-        NSSelectorFromString(@"sharedInstance");
-
-    if (![cls respondsToSelector:selector])
-        return nil;
-
-    return ((id (*)(id, SEL))objc_msgSend)(
-        (id)cls,
-        selector
-    );
+    return @"/var/mobile/IconAutoRefresh-Debug.log";
 }
 
-static id IARIconModel(id controller)
+static void IARLog(NSString *format, ...)
 {
-    if (!controller)
-        return nil;
+    va_list args;
+    va_start(args, format);
 
-    SEL selector =
-        NSSelectorFromString(@"model");
+    NSString *message =
+        [[NSString alloc]
+            initWithFormat:format
+            arguments:args];
 
-    if (![controller respondsToSelector:selector])
-        return nil;
+    va_end(args);
 
-    return ((id (*)(id, SEL))objc_msgSend)(
-        controller,
-        selector
-    );
-}
+    NSString *line =
+        [NSString stringWithFormat:
+            @"[%@] %@\n",
+            [NSDate date],
+            message];
 
-static id IARApplicationIcon(
-    id model,
-    NSString *bundleID
-)
-{
-    if (!model || !bundleID.length)
-        return nil;
+    NSFileHandle *file =
+        [NSFileHandle
+            fileHandleForWritingAtPath:IARLogPath()];
 
-    SEL selector =
-        NSSelectorFromString(
-            @"applicationIconForBundleIdentifier:"
-        );
-
-    if (![model respondsToSelector:selector])
-        return nil;
-
-    return ((id (*)(id, SEL, id))objc_msgSend)(
-        model,
-        selector,
-        bundleID
-    );
-}
-
-static id IARExpectedIcon(
-    id model,
-    NSString *bundleID
-)
-{
-    if (!model || !bundleID.length)
-        return nil;
-
-    SEL selector =
-        NSSelectorFromString(
-            @"expectedIconForDisplayIdentifier:"
-        );
-
-    if (![model respondsToSelector:selector])
-        return nil;
-
-    return ((id (*)(id, SEL, id))objc_msgSend)(
-        model,
-        selector,
-        bundleID
-    );
-}
-
-static id IARFindIcon(
-    id model,
-    NSString *bundleID
-)
-{
-    id icon =
-        IARApplicationIcon(
-            model,
-            bundleID
-        );
-
-    if (icon)
-        return icon;
-
-    return IARExpectedIcon(
-        model,
-        bundleID
-    );
-}
-
-static BOOL IARRootContainsIcon(
-    id controller,
-    id icon
-)
-{
-    if (!controller || !icon)
-        return NO;
-
-    SEL rootFolderSelector =
-        NSSelectorFromString(@"rootFolder");
-
-    if (![controller respondsToSelector:
-          rootFolderSelector])
-        return NO;
-
-    id rootFolder =
-        ((id (*)(id, SEL))objc_msgSend)(
-            controller,
-            rootFolderSelector
-        );
-
-    if (!rootFolder)
-        return NO;
-
-    SEL containsSelector =
-        NSSelectorFromString(@"containsIcon:");
-
-    if (![rootFolder respondsToSelector:
-          containsSelector])
-        return NO;
-
-    return ((BOOL (*)(id, SEL, id))objc_msgSend)(
-        rootFolder,
-        containsSelector,
-        icon
-    );
-}
-
-static BOOL IARAddIcon(
-    id controller,
-    id icon
-)
-{
-    if (!controller || !icon)
-        return NO;
-
-    SEL selector =
-        NSSelectorFromString(
-            @"addIconToHomeScreen:"
-        );
-
-    if (![controller respondsToSelector:selector])
-        return NO;
-
-    ((void (*)(id, SEL, id))objc_msgSend)(
-        controller,
-        selector,
-        icon
-    );
-
-    return YES;
-}
-
-static BOOL IARProcessApplication(
-    NSString *bundleID
-)
-{
-    if (!bundleID.length)
-        return NO;
-
-    id controller =
-        IARSharedIconController();
-
-    if (!controller)
-        return NO;
-
-    id model =
-        IARIconModel(controller);
-
-    if (!model)
-        return NO;
-
-    id icon =
-        IARFindIcon(
-            model,
-            bundleID
-        );
-
-    if (!icon)
-        return NO;
-
-    if (IARRootContainsIcon(
-            controller,
-            icon
-        ))
+    if (!file)
     {
-        return YES;
+        [[NSFileManager defaultManager]
+            createFileAtPath:IARLogPath()
+            contents:nil
+            attributes:nil];
+
+        file =
+            [NSFileHandle
+                fileHandleForWritingAtPath:IARLogPath()];
     }
 
-    return IARAddIcon(
-        controller,
-        icon
-    );
+    if (!file)
+        return;
+
+    [file seekToEndOfFile];
+
+    [file writeData:
+        [line dataUsingEncoding:NSUTF8StringEncoding]];
+
+    [file closeFile];
 }
 
-static void IARRetryApplication(
-    NSString *bundleID,
-    NSUInteger attempt
-)
+static BOOL IARShouldLogSelector(SEL selector)
 {
-    if (!bundleID.length)
-        return;
+    NSString *name =
+        NSStringFromSelector(selector);
 
-    if (IARProcessApplication(bundleID))
-        return;
+    NSArray *keywords = @[
+        @"reload",
+        @"update",
+        @"layout",
+        @"icon",
+        @"application",
+        @"model",
+        @"folder",
+        @"add",
+        @"remove",
+        @"rebuild",
+        @"refresh",
+        @"edit",
+        @"arrange",
+        @"save"
+    ];
 
-    if (attempt >= 10)
-        return;
-
-    static const double delays[] = {
-        0.5,
-        1.0,
-        1.0,
-        1.5,
-        2.0,
-        2.0,
-        3.0,
-        3.0,
-        4.0,
-        5.0
-    };
-
-    double delay = delays[attempt];
-
-    dispatch_after(
-        dispatch_time(
-            DISPATCH_TIME_NOW,
-            (int64_t)(delay * NSEC_PER_SEC)
-        ),
-        dispatch_get_main_queue(),
-        ^{
-            IARRetryApplication(
-                bundleID,
-                attempt + 1
-            );
+    for (NSString *keyword in keywords)
+    {
+        if ([name rangeOfString:
+                keyword
+                options:NSCaseInsensitiveSearch].location
+            != NSNotFound)
+        {
+            return YES;
         }
-    );
-}
-
-static NSArray *IARInstalledApplications(void)
-{
-    Class workspaceClass =
-        NSClassFromString(
-            @"LSApplicationWorkspace"
-        );
-
-    if (!workspaceClass)
-        return @[];
-
-    SEL defaultSelector =
-        NSSelectorFromString(
-            @"defaultWorkspace"
-        );
-
-    if (![workspaceClass respondsToSelector:
-          defaultSelector])
-        return @[];
-
-    id workspace =
-        ((id (*)(id, SEL))objc_msgSend)(
-            (id)workspaceClass,
-            defaultSelector
-        );
-
-    if (!workspace)
-        return @[];
-
-    SEL allAppsSelector =
-        NSSelectorFromString(
-            @"allApplications"
-        );
-
-    if (![workspace respondsToSelector:
-          allAppsSelector])
-        return @[];
-
-    NSArray *apps =
-        ((NSArray *(*)(id, SEL))objc_msgSend)(
-            workspace,
-            allAppsSelector
-        );
-
-    return apps ?: @[];
-}
-
-static NSString *IARBundleIdentifier(
-    id application
-)
-{
-    if (!application)
-        return nil;
-
-    SEL selector =
-        NSSelectorFromString(
-            @"applicationIdentifier"
-        );
-
-    if (![application respondsToSelector:selector])
-        return nil;
-
-    return ((NSString *(*)(id, SEL))objc_msgSend)(
-        application,
-        selector
-    );
-}
-
-static void IARPoll(void)
-{
-    NSArray *applications =
-        IARInstalledApplications();
-
-    NSMutableSet *current =
-        [NSMutableSet
-            setWithCapacity:applications.count];
-
-    for (id application in applications)
-    {
-        NSString *bundleID =
-            IARBundleIdentifier(
-                application
-            );
-
-        if (bundleID.length)
-            [current addObject:bundleID];
     }
 
-    if (!IARKnownApplications)
-    {
-        IARKnownApplications =
-            [current mutableCopy];
+    return NO;
+}
 
+static void IARInstallHooksForClass(Class cls)
+{
+    if (!cls)
         return;
-    }
 
-    NSMutableSet *newApplications =
-        [current mutableCopy];
+    unsigned int count = 0;
 
-    [newApplications
-        minusSet:IARKnownApplications];
-
-    for (NSString *bundleID in newApplications)
-    {
-        NSString *identifier =
-            [bundleID copy];
-
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(1.0 * NSEC_PER_SEC)
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                IARRetryApplication(
-                    identifier,
-                    0
-                );
-            }
+    Method *methods =
+        class_copyMethodList(
+            cls,
+            &count
         );
-    }
 
-    IARKnownApplications =
-        [current mutableCopy];
-}
+    if (!methods)
+        return;
 
-static void IARStart(void)
-{
-    dispatch_async(
-        dispatch_get_main_queue(),
-        ^{
-            IARPoll();
+    for (unsigned int i = 0; i < count; i++)
+    {
+        Method method = methods[i];
 
-            if (IARTimer)
-                return;
+        SEL selector =
+            method_getName(method);
 
-            IARTimer =
-                dispatch_source_create(
-                    DISPATCH_SOURCE_TYPE_TIMER,
-                    0,
-                    0,
-                    dispatch_get_main_queue()
-                );
+        if (!IARShouldLogSelector(selector))
+            continue;
 
-            if (!IARTimer)
-                return;
+        const char *types =
+            method_getTypeEncoding(method);
 
-            dispatch_source_set_timer(
-                IARTimer,
-                dispatch_time(
-                    DISPATCH_TIME_NOW,
-                    (int64_t)(3.0 * NSEC_PER_SEC)
-                ),
-                (uint64_t)(3.0 * NSEC_PER_SEC),
-                (uint64_t)(0.5 * NSEC_PER_SEC)
-            );
+        if (!types)
+            continue;
 
-            dispatch_source_set_event_handler(
-                IARTimer,
-                ^{
-                    IARPoll();
+        if (types[0] != 'v')
+            continue;
+
+        if (strstr(types, "@:") == NULL)
+            continue;
+
+        IMP originalIMP =
+            method_getImplementation(method);
+
+        NSString *selectorName =
+            NSStringFromSelector(selector);
+
+        IMP blockIMP =
+            imp_implementationWithBlock(
+                ^(id object)
+                {
+                    IARLog(
+                        @"CALL %@ [%@]",
+                        selectorName,
+                        NSStringFromClass(
+                            object_getClass(object)
+                        )
+                    );
+
+                    ((void (*)(id, SEL))originalIMP)(
+                        object,
+                        selector
+                    );
                 }
             );
 
-            dispatch_resume(IARTimer);
+        method_setImplementation(
+            method,
+            blockIMP
+        );
+    }
+
+    free(methods);
+}
+
+static void IARInstallHooks(void)
+{
+    NSArray *classNames = @[
+        @"SBIconController",
+        @"SBIconModel",
+        @"SBHIconManager",
+        @"SBRootFolder",
+        @"SBFolder"
+    ];
+
+    for (NSString *className in classNames)
+    {
+        Class cls =
+            NSClassFromString(className);
+
+        if (!cls)
+        {
+            IARLog(
+                @"CLASS NOT FOUND: %@",
+                className
+            );
+
+            continue;
         }
-    );
+
+        IARLog(
+            @"HOOKING CLASS: %@",
+            className
+        );
+
+        IARInstallHooksForClass(cls);
+    }
+
+    IARLog(@"HOOK INSTALLATION COMPLETE");
 }
 
 %ctor
 {
-    NSString *processName =
-        [NSProcessInfo processInfo].processName;
+    @autoreleasepool
+    {
+        NSString *processName =
+            [NSProcessInfo processInfo].processName;
 
-    if ([processName isEqualToString:@"SpringBoard"])
-        IARStart();
+        if (![processName
+              isEqualToString:@"SpringBoard"])
+        {
+            return;
+        }
+
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(5.0 * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                IARLog(@"================================");
+                IARLog(@"IconAutoRefresh DEBUG STARTED");
+                IARLog(@"iOS: %@", UIDevice.currentDevice.systemVersion);
+                IARLog(@"================================");
+
+                IARInstallHooks();
+            }
+        );
+    }
 }
